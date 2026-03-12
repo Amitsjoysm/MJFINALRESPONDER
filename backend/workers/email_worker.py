@@ -421,6 +421,7 @@ async def process_email(email_id: str):
             "intent_detected": intent_id,
             "intent_name": intent_name,
             "intent_confidence": intent_confidence,
+            "auto_send": auto_send_enabled,
             "meeting_detected": is_meeting,
             "meeting_confidence": meeting_confidence,
             "updated_at": datetime.now(timezone.utc).isoformat()
