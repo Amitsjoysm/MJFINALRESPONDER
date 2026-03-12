@@ -227,8 +227,17 @@ async def list_calendar_events(
     user: User = Depends(get_current_user_from_token),
     db: AsyncIOMotorDatabase = Depends(get_db)
 ):
-    """List calendar events"""
-    events = await db.calendar_events.find({"user_id": user.id}).sort("start_time", 1).to_list(100)
+    """List calendar events - excludes cancelled and rescheduled events"""
+    # Only show active events (not cancelled or rescheduled)
+    # Include events without status field (default to confirmed)
+    events = await db.calendar_events.find({
+        "user_id": user.id,
+        "$or": [
+            {"status": {"$exists": False}},  # Old events without status field
+            {"status": "confirmed"},
+            {"status": None}
+        ]
+    }).sort("start_time", 1).to_list(100)
     
     return [
         CalendarEventResponse(

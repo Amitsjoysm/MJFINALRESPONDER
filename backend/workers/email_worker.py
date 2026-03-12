@@ -237,7 +237,6 @@ async def process_email(email_id: str):
             # Extract date from email for better matching
             email_lower = email.body.lower()
             if 'tomorrow' in email_lower:
-                from datetime import timedelta
                 criteria['date'] = (datetime.now() + timedelta(days=1)).isoformat()
             elif 'today' in email_lower:
                 criteria['date'] = datetime.now().isoformat()
@@ -1302,8 +1301,6 @@ async def check_follow_ups():
 async def check_reminders():
     """Check and send calendar reminders"""
     try:
-        from datetime import timedelta
-        
         now = datetime.now(timezone.utc)
         reminder_time = (now + timedelta(hours=1)).isoformat()
         
