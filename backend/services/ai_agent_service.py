@@ -712,6 +712,26 @@ If no clear meeting detected, set is_meeting to false and confidence to 0.0."""
                 prompt += "4. Ask how you can help or move forward\n"
                 prompt += "5. Be respectful of their time - get to the point\n"
             
+            # Add enriched context if available
+            if follow_up_context.get('sender_history'):
+                prompt += "\n📋 FULL SENDER HISTORY (use for context):\n"
+                prompt += follow_up_context['sender_history'] + "\n"
+            
+            if follow_up_context.get('followup_history'):
+                prompt += "\n📨 PREVIOUS FOLLOW-UPS SENT (DO NOT repeat the same message):\n"
+                prompt += follow_up_context['followup_history'] + "\n"
+                prompt += "\nIMPORTANT: Make this follow-up DIFFERENT from previous ones. Add new value or a new angle.\n"
+            
+            if follow_up_context.get('original_email_body'):
+                prompt += f"\n📧 ORIGINAL EMAIL FROM SENDER:\n{follow_up_context['original_email_body'][:500]}\n"
+            
+            if follow_up_context.get('original_draft_sent'):
+                prompt += f"\n📤 OUR PREVIOUS RESPONSE:\n{follow_up_context['original_draft_sent'][:500]}\n"
+            
+            if follow_up_context.get('kb_summary'):
+                prompt += "\n📚 KNOWLEDGE BASE (use relevant info to add value in follow-up):\n"
+                prompt += follow_up_context['kb_summary'][:1000] + "\n"
+            
             prompt += "="*50 + "\n\n"
         
         # Add persona
