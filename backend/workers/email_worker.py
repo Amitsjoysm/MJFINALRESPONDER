@@ -388,7 +388,7 @@ async def process_email(email_id: str):
                                     "id": str(uuid.uuid4()),
                                     "user_id": email.user_id,
                                     "event_id": new_event.get('event_id'),
-                                    "provider_id": provider.id,
+                                    "calendar_provider_id": provider.id,  # Fixed: was provider_id
                                     "title": event_data['title'],
                                     "description": event_data['description'],
                                     "start_time": event_data['start_time'],
@@ -399,7 +399,9 @@ async def process_email(email_id: str):
                                     "attendees": event_data['attendees'],
                                     "status": "confirmed",
                                     "created_at": datetime.now(timezone.utc).isoformat(),
-                                    "created_from_email_id": email.id
+                                    "created_from_email_id": email.id,
+                                    "thread_id": email.thread_id,  # Added: for tracking
+                                    "detected_from_email": True  # Added: for proper tracking
                                 }
                                 await db.calendar_events.insert_one(new_event_record)
                                 

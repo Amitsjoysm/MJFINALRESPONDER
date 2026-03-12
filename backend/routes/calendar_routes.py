@@ -242,14 +242,14 @@ async def list_calendar_events(
     return [
         CalendarEventResponse(
             id=e['id'],
-            calendar_provider_id=e['calendar_provider_id'],
+            calendar_provider_id=e.get('calendar_provider_id', e.get('provider_id', '')),  # Handle both field names
             title=e['title'],
             description=e.get('description'),
             location=e.get('location'),
             start_time=e['start_time'],
             end_time=e['end_time'],
-            attendees=e['attendees'],
-            detected_from_email=e['detected_from_email'],
+            attendees=e.get('attendees', []),
+            detected_from_email=e.get('detected_from_email', False),
             created_at=e['created_at']
         )
         for e in events
