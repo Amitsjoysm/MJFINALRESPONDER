@@ -69,22 +69,23 @@ class AIAgentService:
     
     async def classify_intent(self, email: Email, user_id: str) -> Tuple[Optional[str], float, Optional[Dict]]:
         """
-        Classify email intent using improved keyword matching
+        Classify email intent using AI-powered semantic understanding
         
-        IMPROVED ALGORITHM:
-        - Counts keyword matches for each intent
-        - Selects intent with most keyword matches
-        - Uses priority as tiebreaker
-        - Better accuracy for overlapping keywords
+        ENHANCED ALGORITHM:
+        - Uses LLM to understand what user is actually asking
+        - Analyzes email context, tone, and intent
+        - Matches against available intents based on meaning, not just keywords
+        - Considers lead qualification criteria
+        - More accurate and context-aware than keyword matching
         
         Returns:
             Tuple of (intent_id, confidence, intent_dict)
             - intent_id: The matched intent ID or None
-            - confidence: 0.0-1.0 (0.9 for keyword match, 0.5 for default)
+            - confidence: 0.0-1.0 from AI analysis
             - intent_dict: Full intent document or None
         """
         try:
-            # Get all active intents for user, sorted by priority
+            # Get all active intents for user
             intents = await self.db.intents.find({
                 "user_id": user_id,
                 "is_active": True
@@ -94,52 +95,159 @@ class AIAgentService:
                 logger.warning(f"No intents found for user {user_id}")
                 return None, 0.0, None
             
-            # Prepare email text for matching
-            email_text = f"{email.subject} {email.body}".lower()
+            # Prepare email text
+            email_text = f"Subject: {email.subject}\n\nBody:\n{email.body}"
             
-            # Count keyword matches for each intent
-            intent_scores = []
+            # Build intent descriptions for AI
+            intent_descriptions = []
+            intent_map = {}
             
             for intent_doc in intents:
-                # Skip default intent in keyword matching
+                # Skip default intent - use as fallback
                 if intent_doc.get('is_default', False):
                     continue
                 
-                # Convert datetime fields to ISO strings for Pydantic compatibility
                 self._convert_datetime_fields(intent_doc)
-                
                 intent = Intent(**intent_doc)
                 
-                # Count matching keywords
-                matched_keywords = []
-                for keyword in intent.keywords:
-                    if keyword.lower() in email_text:
-                        matched_keywords.append(keyword)
-                
-                if matched_keywords:
-                    intent_scores.append({
-                        'intent_doc': intent_doc,
-                        'match_count': len(matched_keywords),
-                        'priority': intent.priority,
-                        'name': intent.name,
-                        'matched_keywords': matched_keywords
-                    })
+                intent_info = {
+                    'name': intent.name,
+                    'description': intent.description,
+                    'priority': intent.priority,
+                    'is_lead': intent.is_lead,
+                    'keywords_hint': ', '.join(intent.keywords[:10])  # Hint, not strict matching
+                }
+                intent_descriptions.append(intent_info)
+                intent_map[intent.name] = intent_doc
             
-            # If we have matches, select the best one
-            if intent_scores:
-                # Sort by: 1) match_count (desc), 2) priority (desc)
-                intent_scores.sort(key=lambda x: (x['match_count'], x['priority']), reverse=True)
-                
-                best_match = intent_scores[0]
-                logger.info(f"✓ Intent '{best_match['name']}' matched with {best_match['match_count']} keywords: {', '.join(best_match['matched_keywords'][:3])}")
-                
-                # If there's a tie in match count, log it for debugging
-                if len(intent_scores) > 1 and intent_scores[1]['match_count'] == best_match['match_count']:
-                    logger.info(f"  → Tiebreaker: Priority {best_match['priority']} > {intent_scores[1]['priority']} ({intent_scores[1]['name']})")
-                
-                return best_match['intent_doc']['id'], 0.9, best_match['intent_doc']
+            # If no non-default intents, use default
+            if not intent_descriptions:
+                default_intent = next(
+                    (i for i in intents if i.get('is_default', False)),
+                    None
+                )
+                if default_intent:
+                    self._convert_datetime_fields(default_intent)
+                    logger.info("Only default intent available")
+                    return default_intent['id'], 0.5, default_intent
+                return None, 0.0, None
             
-            # No keyword match - check for default intent
+            # Use AI to classify intent
+            system_prompt = """You are an intelligent email intent classifier. Your job is to understand what the sender is actually asking for and match it to the most appropriate intent.
+
+Analyze the email content carefully:
+- What is the sender's main question or request?
+- What is their underlying need or goal?
+- What action or information are they seeking?
+- Are they a potential customer (lead) or existing customer?
+
+Match the email to the BEST intent based on semantic meaning, not just keywords.
+
+Return your response in this exact JSON format:
+{
+  "intent_name": "The name of the best matching intent",
+  "confidence": 0.95,
+  "reasoning": "Brief explanation of why this intent matches"
+}
+
+If no intent matches well, return:
+{
+  "intent_name": "Default Response",
+  "confidence": 0.5,
+  "reasoning": "Email doesn't clearly match any specific intent"
+}"""
+
+            user_prompt = f"""EMAIL TO CLASSIFY:
+{email_text}
+
+AVAILABLE INTENTS:
+{chr(10).join([f"- {i['name']}: {i['description']} (Priority: {i['priority']}, Lead Intent: {i['is_lead']})" for i in intent_descriptions])}
+
+Analyze this email and determine which intent best matches what the sender is asking for. Consider the context, tone, and actual needs, not just keywords."""
+
+            try:
+                # Call LLM for intent classification
+                response = await self.client.chat.completions.create(
+                    model=self.primary_model,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt}
+                    ],
+                    temperature=0.3,  # Lower temperature for consistent classification
+                    max_tokens=300
+                )
+                
+                result_text = response.choices[0].message.content.strip()
+                
+                # Parse JSON response
+                import json
+                import re
+                
+                # Extract JSON from response (handle markdown code blocks)
+                json_match = re.search(r'\{[^}]+\}', result_text, re.DOTALL)
+                if json_match:
+                    result = json.loads(json_match.group())
+                else:
+                    result = json.loads(result_text)
+                
+                intent_name = result.get('intent_name')
+                confidence = float(result.get('confidence', 0.5))
+                reasoning = result.get('reasoning', 'AI classification')
+                
+                # Find the matching intent
+                if intent_name in intent_map:
+                    matched_intent = intent_map[intent_name]
+                    logger.info(f"✓ AI classified intent: '{intent_name}' (confidence: {confidence:.2f})")
+                    logger.info(f"  Reasoning: {reasoning}")
+                    return matched_intent['id'], confidence, matched_intent
+                
+                # If AI returned "Default Response" or no match found
+                default_intent = next(
+                    (i for i in intents if i.get('is_default', False)),
+                    None
+                )
+                if default_intent:
+                    self._convert_datetime_fields(default_intent)
+                    logger.info(f"Using default intent (AI confidence: {confidence:.2f})")
+                    logger.info(f"  Reasoning: {reasoning}")
+                    return default_intent['id'], confidence, default_intent
+                
+            except Exception as e:
+                logger.error(f"AI intent classification failed: {e}")
+                logger.info("Falling back to keyword matching")
+                
+                # Fallback to keyword matching
+                email_text_lower = f"{email.subject} {email.body}".lower()
+                intent_scores = []
+                
+                for intent_doc in intents:
+                    if intent_doc.get('is_default', False):
+                        continue
+                    
+                    self._convert_datetime_fields(intent_doc)
+                    intent = Intent(**intent_doc)
+                    
+                    matched_keywords = []
+                    for keyword in intent.keywords:
+                        if keyword.lower() in email_text_lower:
+                            matched_keywords.append(keyword)
+                    
+                    if matched_keywords:
+                        intent_scores.append({
+                            'intent_doc': intent_doc,
+                            'match_count': len(matched_keywords),
+                            'priority': intent.priority,
+                            'name': intent.name,
+                            'matched_keywords': matched_keywords
+                        })
+                
+                if intent_scores:
+                    intent_scores.sort(key=lambda x: (x['match_count'], x['priority']), reverse=True)
+                    best_match = intent_scores[0]
+                    logger.info(f"✓ Keyword fallback: '{best_match['name']}' matched with {best_match['match_count']} keywords")
+                    return best_match['intent_doc']['id'], 0.8, best_match['intent_doc']
+            
+            # Final fallback to default intent
             default_intent = next(
                 (i for i in intents if i.get('is_default', False)),
                 None
@@ -147,7 +255,7 @@ class AIAgentService:
             
             if default_intent:
                 self._convert_datetime_fields(default_intent)
-                logger.info("Using default intent for unmatched email")
+                logger.info("Using default intent (fallback)")
                 return default_intent['id'], 0.5, default_intent
             
             logger.warning(f"No matching intent found for email: {email.subject}")
