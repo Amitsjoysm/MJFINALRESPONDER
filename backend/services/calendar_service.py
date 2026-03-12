@@ -19,6 +19,21 @@ class CalendarService:
         self.db = db
         self.oauth_service = OAuthService(db)
     
+
+    
+    def _convert_datetime_fields(self, doc: Dict) -> None:
+        """Convert datetime objects to ISO strings for Pydantic compatibility"""
+        if isinstance(doc.get('created_at'), datetime):
+            doc['created_at'] = doc['created_at'].isoformat()
+        if isinstance(doc.get('updated_at'), datetime):
+            doc['updated_at'] = doc['updated_at'].isoformat()
+        if isinstance(doc.get('token_expires_at'), datetime):
+            doc['token_expires_at'] = doc['token_expires_at'].isoformat()
+        if isinstance(doc.get('start_time'), datetime):
+            doc['start_time'] = doc['start_time'].isoformat()
+        if isinstance(doc.get('end_time'), datetime):
+            doc['end_time'] = doc['end_time'].isoformat()
+
     async def ensure_token_valid(self, provider: CalendarProvider) -> CalendarProvider:
         """Check and refresh OAuth token if expired"""
         if not provider.token_expires_at or not provider.refresh_token:
