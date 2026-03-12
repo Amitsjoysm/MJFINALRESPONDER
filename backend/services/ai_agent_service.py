@@ -114,7 +114,7 @@ class AIAgentService:
                     'name': intent.name,
                     'description': intent.description,
                     'priority': intent.priority,
-                    'is_lead': intent.is_lead,
+                    'is_lead': intent.is_inbound_lead,
                     'keywords_hint': ', '.join(intent.keywords[:10])  # Hint, not strict matching
                 }
                 intent_descriptions.append(intent_info)
@@ -1418,22 +1418,91 @@ Respond with JSON indicating validation result."""
     # ============================================================================
     
     def _parse_json_response(self, content: str) -> Dict:
-        """Parse JSON response, handling markdown code blocks"""
+        """
+        Parse JSON response with robust error handling
+        
+        Handles:
+        - Markdown code blocks (```json ... ```)
+        - Multiple JSON objects (extracts first)
+        - Extra whitespace and newlines
+        - Text before/after JSON
+        - Malformed responses
+        """
+        import re
+        
         try:
-            # Remove markdown code blocks if present
+            # Strategy 1: Direct parse after stripping
             json_content = content.strip()
+            return json.loads(json_content)
+        except json.JSONDecodeError:
+            pass
+        
+        try:
+            # Strategy 2: Remove markdown code blocks
+            json_content = content.strip()
+            
+            # Remove ```json and ``` markers
             if json_content.startswith('```json'):
                 json_content = json_content[7:]
-            if json_content.startswith('```'):
+            elif json_content.startswith('```'):
                 json_content = json_content[3:]
+            
             if json_content.endswith('```'):
                 json_content = json_content[:-3]
-            json_content = json_content.strip()
             
+            json_content = json_content.strip()
             return json.loads(json_content)
-        except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse JSON response: {content}")
-            raise ValueError(f"Invalid JSON response: {str(e)}")
+        except json.JSONDecodeError:
+            pass
+        
+        try:
+            # Strategy 3: Extract JSON from markdown code blocks using regex
+            json_match = re.search(r'```json\s*(\{.*?\})\s*```', content, re.DOTALL)
+            if json_match:
+                return json.loads(json_match.group(1))
+            
+            # Try without json label
+            json_match = re.search(r'```\s*(\{.*?\})\s*```', content, re.DOTALL)
+            if json_match:
+                return json.loads(json_match.group(1))
+        except (json.JSONDecodeError, AttributeError):
+            pass
+        
+        try:
+            # Strategy 4: Extract first JSON object from text
+            # Find content between first { and matching }
+            json_match = re.search(r'\{[^}]*(?:\{[^}]*\}[^}]*)*\}', content, re.DOTALL)
+            if json_match:
+                json_str = json_match.group(0)
+                return json.loads(json_str)
+        except (json.JSONDecodeError, AttributeError):
+            pass
+        
+        try:
+            # Strategy 5: Split by newlines and find JSON object
+            lines = content.split('\n')
+            json_lines = []
+            in_json = False
+            brace_count = 0
+            
+            for line in lines:
+                if '{' in line and not in_json:
+                    in_json = True
+                    brace_count = line.count('{') - line.count('}')
+                    json_lines.append(line)
+                elif in_json:
+                    json_lines.append(line)
+                    brace_count += line.count('{') - line.count('}')
+                    if brace_count == 0:
+                        # Complete JSON object found
+                        json_str = '\n'.join(json_lines)
+                        return json.loads(json_str)
+        except (json.JSONDecodeError, ValueError):
+            pass
+        
+        # All strategies failed
+        logger.error(f"Failed to parse JSON response after all strategies. Content: {content[:200]}...")
+        raise ValueError(f"Invalid JSON response: Could not extract valid JSON from response")
     
     def _convert_datetime_fields(self, doc: Dict):
         """Convert datetime fields to ISO strings for Pydantic compatibility"""
