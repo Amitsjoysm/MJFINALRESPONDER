@@ -28,8 +28,17 @@ async def start_google_calendar_oauth(
         auth_service = AuthService(db)
         user = await auth_service.get_current_user(token)
         
-        # Get frontend URL from request
-        frontend_url = request.headers.get('origin') or request.headers.get('referer') or config.APP_URL
+        # Get frontend URL from request (base URL only, no paths)
+        from urllib.parse import urlparse
+        frontend_url = request.headers.get('origin')
+        if not frontend_url:
+            referer = request.headers.get('referer')
+            if referer:
+                parsed = urlparse(referer)
+                frontend_url = f"{parsed.scheme}://{parsed.netloc}"
+            else:
+                frontend_url = config.APP_URL
+        
         if frontend_url and frontend_url.endswith('/'):
             frontend_url = frontend_url[:-1]
         
@@ -70,8 +79,17 @@ async def start_microsoft_calendar_oauth(
         auth_service = AuthService(db)
         user = await auth_service.get_current_user(token)
         
-        # Get frontend URL from request
-        frontend_url = request.headers.get('origin') or request.headers.get('referer') or config.APP_URL
+        # Get frontend URL from request (base URL only, no paths)
+        from urllib.parse import urlparse
+        frontend_url = request.headers.get('origin')
+        if not frontend_url:
+            referer = request.headers.get('referer')
+            if referer:
+                parsed = urlparse(referer)
+                frontend_url = f"{parsed.scheme}://{parsed.netloc}"
+            else:
+                frontend_url = config.APP_URL
+        
         if frontend_url and frontend_url.endswith('/'):
             frontend_url = frontend_url[:-1]
         
