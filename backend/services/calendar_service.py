@@ -517,6 +517,11 @@ Your Email Assistant
             return True
             
         except Exception as e:
+            error_str = str(e)
+            # If event already deleted (410 Gone), consider it a success
+            if '410' in error_str or 'deleted' in error_str.lower():
+                logger.warning(f"Event {event_id} already deleted from Google Calendar")
+                return True
             logger.error(f"Error deleting Google Calendar event: {e}")
             return False
     
@@ -564,8 +569,15 @@ Your Email Assistant
         - thread_id: Email thread ID
         """
         try:
-            # Build query
-            query = {"user_id": user_id}
+            # Build query - ONLY search active events (not cancelled or rescheduled)
+            query = {
+                "user_id": user_id,
+                "$or": [
+                    {"status": {"$exists": False}},  # Old events without status
+                    {"status": "confirmed"},
+                    {"status": None}
+                ]
+            }
             
             # Date matching
             if criteria.get('date'):
@@ -581,6 +593,10 @@ Your Email Assistant
                     }
                 except Exception as e:
                     logger.warning(f"Could not parse date criteria: {e}")
+            
+            # Thread ID matching (most reliable for finding related event)
+            if criteria.get('thread_id'):
+                query['thread_id'] = criteria['thread_id']
             
             # Search events
             events = await self.db.calendar_events.find(query).sort("start_time", 1).to_list(20)
