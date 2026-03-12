@@ -166,18 +166,13 @@ AVAILABLE INTENTS:
 Analyze this email and determine which intent best matches what the sender is asking for. Consider the context, tone, and actual needs, not just keywords."""
 
             try:
-                # Call LLM for intent classification
-                response = await self.client.chat.completions.create(
-                    model=self.primary_model,
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt}
-                    ],
+                # Call LLM for intent classification using the generic API method
+                result_text = await self._call_llm_api(
+                    system_message=system_prompt,
+                    user_message=user_prompt,
                     temperature=0.3,  # Lower temperature for consistent classification
                     max_tokens=300
                 )
-                
-                result_text = response.choices[0].message.content.strip()
                 
                 # Parse JSON response
                 import json
@@ -454,10 +449,20 @@ MEETING DETECTION RULES:
 5. Use thread context to avoid duplicates - if meeting already discussed, confidence should be lower
 
 IMPORTANT - TIME CONFIRMATION PROTOCOL:
-- If user proposes a time but hasn't explicitly confirmed: confidence should be 0.5-0.7 (ASK FOR CONFIRMATION)
+- **CHECK THREAD CONTEXT FIRST**: Review previous messages to understand the full conversation
+- If user proposes a time in FIRST message: confidence should be 0.5-0.7 (ASK FOR CONFIRMATION)
 - If user confirms a previously proposed time: confidence should be 0.8-1.0 (CREATE EVENT)
-- Look for confirmation phrases: "works for me", "sounds good", "confirmed", "that time is perfect", "yes to [time]"
+- Look for confirmation phrases: "works for me", "sounds good", "confirmed", "that time is perfect", "yes to [time]", "yes that works"
 - If time is vague or missing: confidence should be 0.3-0.5 (ASK FOR TIME)
+
+**TIMEZONE HANDLING (CRITICAL)**:
+- If timezone is explicitly mentioned (IST, PST, EST, etc.), CONVERT to UTC
+- IST (Indian Standard Time) = UTC + 5:30
+- PST (Pacific) = UTC - 8:00
+- EST (Eastern) = UTC - 5:00
+- If "3 PM IST" → Convert to UTC: 3 PM IST = 9:30 AM UTC (NOT 4 PM UTC!)
+- If no timezone mentioned, assume UTC
+- ALWAYS specify the original timezone in the response for clarity
 
 If a meeting is detected, extract:
 1. Meeting date and time:
