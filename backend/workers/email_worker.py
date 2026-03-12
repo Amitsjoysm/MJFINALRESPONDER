@@ -9,6 +9,7 @@ from config import config
 from services.email_service import EmailService
 from services.ai_agent_service import AIAgentService
 from services.calendar_service import CalendarService
+from services.autonomous_calendar_agent import AutonomousCalendarAgent
 from models.email_account import EmailAccount
 from models.email import Email
 
@@ -208,6 +209,231 @@ async def process_email(email_id: str):
             "intent_name": intent_name,
             "confidence": intent_confidence
         })
+
+        
+        # ====================================================================
+        # STEP 1.5: CHECK FOR CALENDAR ACTIONS (Cancellation/Rescheduling)
+        # ====================================================================
+        logger.info(f"📅 Step 1.5: Checking for calendar actions")
+        calendar_agent = AutonomousCalendarAgent(db)
+        calendar_action = await calendar_agent.detect_calendar_action(
+            email.body,
+            email.subject
+        )
+        
+        calendar_event_action = None  # To track what we did with calendar
+        
+        if calendar_action['action'] != 'none':
+            logger.info(f"🔔 Calendar action detected: {calendar_action['action']} (confidence: {calendar_action['confidence']})")
+            
+            calendar_service = CalendarService(db)
+            
+            # Try to find related event
+            criteria = {
+                'sender_email': email.from_email,
+                'thread_id': email.thread_id
+            }
+            
+            # Extract date from email for better matching
+            email_lower = email.body.lower()
+            if 'tomorrow' in email_lower:
+                from datetime import timedelta
+                criteria['date'] = (datetime.now() + timedelta(days=1)).isoformat()
+            elif 'today' in email_lower:
+                criteria['date'] = datetime.now().isoformat()
+            
+            related_event = await calendar_service.find_event_by_criteria(
+                email.user_id,
+                criteria
+            )
+            
+            # Handle CANCELLATION
+            if calendar_action['action'] == 'cancel':
+                if related_event:
+                    logger.info(f"  → Found event to cancel: {related_event.get('title')}")
+                    
+                    # Get calendar provider
+                    provider_doc = await db.calendar_providers.find_one({
+                        "user_id": email.user_id,
+                        "is_active": True
+                    })
+                    
+                    if provider_doc:
+                        from models.calendar import CalendarProvider
+                        calendar_service._convert_datetime_fields(provider_doc)
+                        provider = CalendarProvider(**provider_doc)
+                        
+                        # Delete event from calendar
+                        success = False
+                        if provider.provider_type == 'google':
+                            success = await calendar_service.delete_event_google(
+                                provider,
+                                related_event.get('event_id')
+                            )
+                        elif provider.provider_type == 'outlook':
+                            success = await calendar_service.delete_event_outlook(
+                                provider,
+                                related_event.get('event_id')
+                            )
+                        
+                        if success:
+                            # Mark as cancelled in database
+                            await db.calendar_events.update_one(
+                                {"id": related_event['id']},
+                                {"$set": {
+                                    "status": "cancelled",
+                                    "cancelled_at": datetime.now(timezone.utc).isoformat()
+                                }}
+                            )
+                            calendar_event_action = {
+                                'action': 'cancelled',
+                                'event': related_event,
+                                'success': True
+                            }
+                            logger.info(f"  ✓ Event cancelled successfully")
+                        else:
+                            logger.error(f"  ✗ Failed to cancel event")
+                            calendar_event_action = {
+                                'action': 'cancel_failed',
+                                'event': related_event,
+                                'success': False
+                            }
+                else:
+                    logger.warning(f"  ⚠️  No related event found to cancel")
+                    calendar_event_action = {
+                        'action': 'cancel_no_event',
+                        'success': False
+                    }
+            
+            # Handle RESCHEDULING
+            elif calendar_action['action'] == 'reschedule':
+                if related_event:
+                    logger.info(f"  → Found event to reschedule: {related_event.get('title')}")
+                    
+                    # Try to extract new time from email
+                    new_meeting_info = await ai_service.detect_meeting(
+                        email,
+                        thread_context=[]
+                    )
+                    
+                    if new_meeting_info[0] and new_meeting_info[1] >= 0.6:
+                        new_details = new_meeting_info[2]
+                        
+                        # Get calendar provider
+                        provider_doc = await db.calendar_providers.find_one({
+                            "user_id": email.user_id,
+                            "is_active": True
+                        })
+                        
+                        if provider_doc:
+                            from models.calendar import CalendarProvider
+                            calendar_service._convert_datetime_fields(provider_doc)
+                            provider = CalendarProvider(**provider_doc)
+                            
+                            # CRITICAL: Delete old event first
+                            old_event_id = related_event.get('event_id')
+                            delete_success = False
+                            
+                            if provider.provider_type == 'google':
+                                delete_success = await calendar_service.delete_event_google(
+                                    provider,
+                                    old_event_id
+                                )
+                            elif provider.provider_type == 'outlook':
+                                delete_success = await calendar_service.delete_event_outlook(
+                                    provider,
+                                    old_event_id
+                                )
+                            
+                            if delete_success:
+                                logger.info(f"  ✓ Deleted old event before rescheduling")
+                            
+                            # Create new event with new time
+                            event_data = {
+                                'title': new_details.get('title', related_event.get('title')),
+                                'description': related_event.get('description', ''),
+                                'start_time': new_details.get('start_time'),
+                                'end_time': new_details.get('end_time'),
+                                'location': new_details.get('location', related_event.get('location')),
+                                'attendees': related_event.get('attendees', []),
+                                'timezone': new_details.get('timezone', 'UTC')
+                            }
+                            
+                            # Create new event in calendar
+                            new_event = None
+                            if provider.provider_type == 'google':
+                                new_event = await calendar_service.create_event_google(
+                                    provider,
+                                    event_data
+                                )
+                            elif provider.provider_type == 'outlook':
+                                new_event = await calendar_service.create_event_outlook(
+                                    provider,
+                                    event_data
+                                )
+                            
+                            if new_event:
+                                # Mark old event as rescheduled in database
+                                await db.calendar_events.update_one(
+                                    {"id": related_event['id']},
+                                    {"$set": {
+                                        "status": "rescheduled",
+                                        "rescheduled_at": datetime.now(timezone.utc).isoformat(),
+                                        "new_event_id": new_event.get('event_id')
+                                    }}
+                                )
+                                
+                                # Create new event record in database
+                                import uuid
+                                new_event_record = {
+                                    "id": str(uuid.uuid4()),
+                                    "user_id": email.user_id,
+                                    "event_id": new_event.get('event_id'),
+                                    "provider_id": provider.id,
+                                    "title": event_data['title'],
+                                    "description": event_data['description'],
+                                    "start_time": event_data['start_time'],
+                                    "end_time": event_data['end_time'],
+                                    "timezone": event_data['timezone'],
+                                    "meet_link": new_event.get('meet_link'),
+                                    "html_link": new_event.get('html_link'),
+                                    "attendees": event_data['attendees'],
+                                    "status": "confirmed",
+                                    "created_at": datetime.now(timezone.utc).isoformat(),
+                                    "created_from_email_id": email.id
+                                }
+                                await db.calendar_events.insert_one(new_event_record)
+                                
+                                calendar_event_action = {
+                                    'action': 'rescheduled',
+                                    'old_event': related_event,
+                                    'new_event': new_event_record,
+                                    'old_time': related_event.get('start_time'),
+                                    'new_time': new_details.get('start_time'),
+                                    'success': True
+                                }
+                                logger.info(f"  ✓ Event rescheduled successfully (old event deleted, new event created)")
+                            else:
+                                logger.error(f"  ✗ Failed to create new event for rescheduling")
+                                calendar_event_action = {
+                                    'action': 'reschedule_failed',
+                                    'event': related_event,
+                                    'success': False
+                                }
+                    else:
+                        logger.warning(f"  ⚠️  Could not extract new time for rescheduling")
+                        calendar_event_action = {
+                            'action': 'reschedule_time_unclear',
+                            'event': related_event,
+                            'success': False
+                        }
+                else:
+                    logger.warning(f"  ⚠️  No related event found to reschedule")
+                    calendar_event_action = {
+                        'action': 'reschedule_no_event',
+                        'success': False
+                    }
+
         
         # Step 1.25: Check for Inbound Lead with Autonomous Qualification
         from services.lead_agent_service import LeadAgentService

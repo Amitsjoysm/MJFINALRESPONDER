@@ -475,3 +475,127 @@ Your Email Assistant
             logger.error(f"Error sending reminder: {e}")
 
 import uuid
+
+
+    
+    async def delete_event_google(self, provider: CalendarProvider, event_id: str) -> bool:
+        """Delete/cancel event from Google Calendar"""
+        try:
+            # Ensure token is valid
+            provider = await self.ensure_token_valid(provider)
+            
+            # Create credentials
+            creds = Credentials(
+                token=provider.access_token,
+                refresh_token=provider.refresh_token,
+                token_uri='https://oauth2.googleapis.com/token',
+                client_id=config.GOOGLE_CLIENT_ID,
+                client_secret=config.GOOGLE_CLIENT_SECRET
+            )
+            
+            def _delete_event():
+                service = build('calendar', 'v3', credentials=creds)
+                service.events().delete(
+                    calendarId='primary',
+                    eventId=event_id,
+                    sendUpdates='all'  # Send cancellation to all attendees
+                ).execute()
+            
+            await asyncio.to_thread(_delete_event)
+            logger.info(f"✓ Deleted Google Calendar event: {event_id}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error deleting Google Calendar event: {e}")
+            return False
+    
+    async def delete_event_outlook(self, provider: CalendarProvider, event_id: str) -> bool:
+        """Delete/cancel event from Outlook Calendar"""
+        try:
+            # Ensure token is valid
+            provider = await self.ensure_token_valid_outlook(provider)
+            
+            headers = {
+                'Authorization': f'Bearer {provider.access_token}',
+                'Content-Type': 'application/json'
+            }
+            
+            async with httpx.AsyncClient() as client:
+                response = await client.delete(
+                    f'https://graph.microsoft.com/v1.0/me/events/{event_id}',
+                    headers=headers
+                )
+            
+            if response.status_code == 204:
+                logger.info(f"✓ Deleted Outlook Calendar event: {event_id}")
+                return True
+            else:
+                logger.error(f"Failed to delete Outlook event: {response.status_code} - {response.text}")
+                return False
+            
+        except Exception as e:
+            logger.error(f"Error deleting Outlook Calendar event: {e}")
+            return False
+    
+    async def find_event_by_criteria(
+        self,
+        user_id: str,
+        criteria: Dict
+    ) -> Optional[Dict]:
+        """
+        Find calendar event matching criteria
+        
+        Criteria can include:
+        - date: Date string or datetime
+        - time: Time string
+        - sender_email: Email of person who sent request
+        - subject_keywords: Keywords from email subject
+        - thread_id: Email thread ID
+        """
+        try:
+            # Build query
+            query = {"user_id": user_id}
+            
+            # Date matching
+            if criteria.get('date'):
+                from dateutil import parser as date_parser
+                try:
+                    target_date = date_parser.parse(str(criteria['date']))
+                    start_of_day = target_date.replace(hour=0, minute=0, second=0, microsecond=0)
+                    end_of_day = target_date.replace(hour=23, minute=59, second=59, microsecond=999999)
+                    
+                    query['start_time'] = {
+                        '$gte': start_of_day.isoformat(),
+                        '$lte': end_of_day.isoformat()
+                    }
+                except Exception as e:
+                    logger.warning(f"Could not parse date criteria: {e}")
+            
+            # Search events
+            events = await self.db.calendar_events.find(query).sort("start_time", 1).to_list(20)
+            
+            if not events:
+                return None
+            
+            # If multiple events, try to narrow down
+            if len(events) > 1:
+                # Filter by attendees if sender email provided
+                if criteria.get('sender_email'):
+                    matching = [e for e in events if criteria['sender_email'] in e.get('attendees', [])]
+                    if matching:
+                        events = matching
+                
+                # Filter by time if provided
+                if criteria.get('time') and len(events) > 1:
+                    time_str = str(criteria['time']).lower()
+                    for event in events:
+                        event_time = event.get('start_time', '')
+                        if time_str in event_time.lower():
+                            return event
+            
+            # Return first match or best match
+            return events[0] if events else None
+            
+        except Exception as e:
+            logger.error(f"Error finding event by criteria: {e}")
+            return None
