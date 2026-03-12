@@ -467,8 +467,13 @@ If no clear meeting detected, set is_meeting to false and confidence to 0.0."""
             draft = SignatureHandler.remove_ai_signature(draft)
             
             # CRITICAL PRE-CHECK: Reject obviously incomplete drafts immediately
+            import re
             draft_length = len(draft)
             word_count = len(draft.split())
+            
+            # Remove extra whitespace for accurate checks
+            draft_normalized = re.sub(r'\s+', ' ', draft).strip()
+            draft_normalized_lower = draft_normalized.lower()
             
             if draft_length < 30:
                 logger.error(f"✗ CRITICAL: Draft extremely short ({draft_length} chars) - likely just greeting")
@@ -478,17 +483,30 @@ If no clear meeting detected, set is_meeting to false and confidence to 0.0."""
                 logger.error(f"✗ CRITICAL: Draft has very few words ({word_count} words) - incomplete response")
                 raise ValueError(f"Draft generation failed: Too few words ({word_count} words, minimum 10)")
             
-            # Check for greeting-only patterns
-            draft_lower = draft.lower().strip()
+            # ENHANCED: Check for greeting-only patterns (more comprehensive)
             greeting_only_patterns = [
-                r'^(hi|hello|dear|hey)\s+\w+[\s,\.]*$',
-                r'^(hi|hello|dear|hey)[\s,\.]*$',
+                r'^(hi|hello|dear|hey)\s+\w+[\s,\.!]*$',
+                r'^(hi|hello|dear|hey)[\s,\.!]*$',
+                r'^(hi|hello|dear|hey)\s+there[\s,\.!]*$',
             ]
-            import re
+            
             for pattern in greeting_only_patterns:
-                if re.match(pattern, draft_lower):
+                if re.match(pattern, draft_normalized_lower):
                     logger.error(f"✗ CRITICAL: Draft is greeting-only: '{draft}'")
                     raise ValueError("Draft generation failed: Response is only a greeting with no content")
+            
+            # ENHANCED: Check if draft starts with greeting but has minimal content after
+            lines = [l.strip() for l in draft.split('\n') if l.strip()]
+            if len(lines) > 0:
+                first_line_lower = lines[0].lower()
+                greeting_starts = ['hi ', 'hello ', 'dear ', 'hey ', 'hi,', 'hello,', 'dear,', 'hey,']
+                
+                if any(first_line_lower.startswith(g) for g in greeting_starts):
+                    # Check content after greeting
+                    remaining_content = ' '.join(lines[1:]).strip()
+                    if len(remaining_content) < 40 or len(remaining_content.split()) < 12:
+                        logger.error(f"✗ CRITICAL: Draft has greeting but insufficient content: '{draft}'")
+                        raise ValueError(f"Draft generation failed: Greeting present but insufficient content ({len(remaining_content)} chars, {len(remaining_content.split())} words after greeting)")
             
             logger.info(f"✓ Draft generated ({draft_length} chars, {word_count} words, signature removed)")
             
@@ -923,36 +941,56 @@ FORMATTING:
                 return False, [f"Draft is too short: {draft_length} characters (minimum 50 required)"], 0
             
             # ============================================================
-            # LAYER 2: GREETING-ONLY DETECTION (CRITICAL)
+            # LAYER 2: GREETING-ONLY DETECTION (CRITICAL) - ENHANCED
             # ============================================================
+            import re
             draft_lower = draft_stripped.lower()
             
-            # Pattern 1: Just "Hi {Name}," or "Hello {Name},"
-            greeting_patterns = [
-                r'^hi\s+\w+[\s,]*$',
-                r'^hello\s+\w+[\s,]*$',
-                r'^dear\s+\w+[\s,]*$',
-                r'^hey\s+\w+[\s,]*$',
+            # Remove all whitespace/newlines for pure content check
+            draft_no_whitespace = re.sub(r'\s+', ' ', draft_stripped).strip()
+            draft_no_whitespace_lower = draft_no_whitespace.lower()
+            
+            # Pattern 1: Just "Hi {Name}," or "Hello {Name}," (exact match)
+            greeting_exact_patterns = [
+                r'^hi\s+\w+[\s,\.!]*$',
+                r'^hello\s+\w+[\s,\.!]*$',
+                r'^dear\s+\w+[\s,\.!]*$',
+                r'^hey\s+\w+[\s,\.!]*$',
+                r'^hi\s+there[\s,\.!]*$',
+                r'^hello\s+there[\s,\.!]*$',
             ]
             
-            import re
-            for pattern in greeting_patterns:
-                if re.match(pattern, draft_lower):
-                    logger.warning(f"✗ VALIDATION FAILED: Greeting-only response detected")
+            for pattern in greeting_exact_patterns:
+                if re.match(pattern, draft_no_whitespace_lower):
+                    logger.warning(f"✗ VALIDATION FAILED: Greeting-only response detected (exact match)")
                     return False, ["Draft contains only a greeting with no actual content"], 0
             
-            # Pattern 2: Greeting + comma/newline + nothing else
-            if draft_length < 100:
-                # Check if it's mostly just a greeting
-                lines = draft_stripped.split('\n')
-                first_line = lines[0].strip().lower()
+            # Pattern 2: Greeting at start + minimal content (STRICTER)
+            # Split by lines and check all variations
+            lines = [line.strip() for line in draft_stripped.split('\n') if line.strip()]
+            
+            if len(lines) > 0:
+                first_line_lower = lines[0].lower()
                 
-                if first_line.startswith(('hi ', 'hello ', 'dear ', 'hey ')):
-                    # If first line is a greeting and there's no substantial content
-                    remaining_content = '\n'.join(lines[1:]).strip()
-                    if len(remaining_content) < 30:
-                        logger.warning(f"✗ VALIDATION FAILED: Only greeting with minimal content")
-                        return False, ["Draft appears to be just a greeting with insufficient content"], 0
+                # Check if first line is a greeting
+                greeting_starts = ['hi ', 'hello ', 'dear ', 'hey ', 'hi,', 'hello,', 'dear,', 'hey,']
+                is_greeting_start = any(first_line_lower.startswith(g) for g in greeting_starts)
+                
+                if is_greeting_start:
+                    # Calculate actual content (excluding greeting line)
+                    remaining_lines = lines[1:] if len(lines) > 1 else []
+                    remaining_content = ' '.join(remaining_lines).strip()
+                    
+                    # STRICT: If remaining content is less than 50 characters, reject
+                    if len(remaining_content) < 50:
+                        logger.warning(f"✗ VALIDATION FAILED: Greeting with insufficient content ({len(remaining_content)} chars after greeting)")
+                        return False, [f"Draft has greeting but insufficient actual content ({len(remaining_content)} characters after greeting, minimum 50 required)"], 0
+                    
+                    # EXTRA CHECK: Ensure remaining content has substance (not just filler)
+                    remaining_word_count = len(remaining_content.split())
+                    if remaining_word_count < 15:
+                        logger.warning(f"✗ VALIDATION FAILED: Greeting with too few words after greeting ({remaining_word_count} words)")
+                        return False, [f"Draft has greeting but too few words after greeting ({remaining_word_count} words, minimum 15 required)"], 0
             
             # ============================================================
             # LAYER 3: WORD COUNT VALIDATION
