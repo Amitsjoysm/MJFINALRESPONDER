@@ -759,23 +759,88 @@ If no clear meeting detected, set is_meeting to false and confidence to 0.0."""
             
             if confidence >= 0.5:
                 # Meeting detected but needs confirmation
-                prompt += f"""
+                details = meeting_info.get('details', {})
+                has_time = details.get('start_time') and details['start_time'] not in ['Not specified', 'TBD', None]
+                has_day = details.get('date') or 'tomorrow' in str(details).lower() or 'next week' in str(details).lower()
+                
+                if has_day and not has_time:
+                    # Day provided but no specific time - suggest 2 options
+                    prompt += f"""
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📅 MEETING REQUEST - DAY PROVIDED, TIME NOT SPECIFIED
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Confidence: {confidence:.1f}
+Day Mentioned: {details.get('date', 'Not specified')}
+Title: {details.get('title', 'Meeting')}
+
+IMPORTANT: User provided DAY but NOT specific TIME.
+
+YOUR RESPONSE SHOULD:
+1. Acknowledge the meeting request warmly
+2. **SUGGEST TWO SPECIFIC TIME OPTIONS** for that day:
+   - Option 1: Morning slot (e.g., "10:00 AM IST")
+   - Option 2: Afternoon slot (e.g., "3:00 PM IST")
+3. Ask: "Which time works better for you? Or feel free to suggest another time."
+4. Keep it friendly and conversational
+5. DO NOT mention checking calendar conflicts or availability
+
+Example:
+"Hi [Name],
+
+I'd be happy to schedule a call for {details.get('date', 'that day')}! 
+
+Would either of these times work for you?
+• 10:00 AM IST
+• 3:00 PM IST
+
+Or please let me know what time would be most convenient for you, and I'll send a calendar invite with the meeting details.
+
+Looking forward to connecting!"
+
+DO NOT create calendar event yet - wait for user to confirm time.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+"""
+                elif has_time:
+                    # Time provided - ask for confirmation
+                    prompt += f"""
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 📅 MEETING REQUEST DETECTED - TIME CONFIRMATION NEEDED
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Confidence: {confidence:.1f} (Medium - needs explicit confirmation)
+Confidence: {confidence:.1f}
 Suggested Time: {details.get('start_time', 'Not specified')}
 Title: {details.get('title', 'Meeting')}
 
 IMPORTANT: DO NOT create calendar event yet!
-Your response should:
-1. Acknowledge the meeting request warmly
-2. If time was suggested: Ask "Would [time] work for you? Please confirm."
-3. If time not clear: Ask "What date and time would work best for you?"
-4. Let them know calendar invite will be sent once they confirm
-5. Mention you'll check for any scheduling conflicts
 
-Once user explicitly confirms the time, the system will automatically create the calendar event.
+YOUR RESPONSE SHOULD:
+1. Acknowledge the meeting request warmly
+2. Confirm the suggested time: "Would [date] at [time] work for you?"
+3. Ask for explicit confirmation
+4. Let them know calendar invite will be sent once they confirm
+5. DO NOT mention checking calendar conflicts or availability
+
+Once user confirms, the system will create the calendar event automatically.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+"""
+                else:
+                    # Neither day nor time clear - ask for both
+                    prompt += f"""
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📅 MEETING REQUEST - DATE & TIME NEEDED
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Confidence: {confidence:.1f}
+Title: {details.get('title', 'Meeting')}
+
+IMPORTANT: User wants to schedule but didn't specify when.
+
+YOUR RESPONSE SHOULD:
+1. Acknowledge the meeting request warmly
+2. Ask "What date and time would work best for you?"
+3. Keep it simple and friendly
+4. DO NOT mention checking calendar conflicts or availability
+
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 """
