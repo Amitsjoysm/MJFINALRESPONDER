@@ -83,8 +83,8 @@ class DateParserService:
                 except Exception as e:
                     logger.error(f"Error calculating relative date: {e}")
         
-        # Pattern 2.5: Week ranges "in 2-3 weeks" / "in 10-15 weeks"
-        week_range_matches = re.finditer(r'in\s+(\d+)\s*[-–]\s*(\d+)\s+weeks?', text, re.IGNORECASE)
+        # Pattern 2.5: Week ranges "in 2-3 weeks" / "after 2-3 weeks"
+        week_range_matches = re.finditer(r'(?:in|after)\s+(\d+)\s*[-–]\s*(\d+)\s+weeks?', text, re.IGNORECASE)
         for match in week_range_matches:
             try:
                 w1 = int(match.group(1))
@@ -96,8 +96,8 @@ class DateParserService:
             except Exception as e:
                 logger.error(f"Error calculating week range: {e}")
         
-        # Pattern 2.6: Simple week reference "in X weeks"
-        week_simple_matches = re.finditer(r'in\s+(\d+)\s+weeks?', text, re.IGNORECASE)
+        # Pattern 2.6: Simple week reference "in X weeks" / "after X weeks"
+        week_simple_matches = re.finditer(r'(?:in|after)\s+(\d+)\s+weeks?', text, re.IGNORECASE)
         for match in week_simple_matches:
             try:
                 weeks = int(match.group(1))

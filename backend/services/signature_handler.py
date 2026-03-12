@@ -25,6 +25,7 @@ class SignatureHandler:
         """
         Remove any AI-generated signature from draft text.
         Signatures typically appear at the end with closing phrases.
+        Only checks the LAST few lines to avoid stripping body content.
         
         Args:
             draft_text: Draft text that may contain AI-generated signature
@@ -38,20 +39,34 @@ class SignatureHandler:
         # Split into lines
         lines = draft_text.split('\n')
         
-        # Find the last substantial content line
-        # Look for signature patterns from the end
+        # Only check the last 5 lines for signature patterns
+        # This avoids stripping body content that happens to contain "thank you" etc.
         signature_start_idx = len(lines)
+        check_start = max(0, len(lines) - 5)
         
-        # Scan from the end to find signature markers
-        for i in range(len(lines) - 1, -1, -1):
+        # Scan from the end to find signature markers (only last 5 lines)
+        for i in range(len(lines) - 1, check_start - 1, -1):
             line = lines[i].strip().lower()
             
-            # Check for common closing phrases
-            if any(phrase in line for phrase in [
-                'best regards', 'sincerely', 'regards', 'cheers',
-                'thank you', 'thanks', 'warm regards', 'kind regards',
-                'best wishes', 'yours truly', 'yours sincerely'
-            ]):
+            # Skip empty lines
+            if not line:
+                continue
+            
+            # Check for common closing phrases (standalone lines only)
+            closing_phrases = [
+                'best regards', 'sincerely', 'warm regards', 'kind regards',
+                'best wishes', 'yours truly', 'yours sincerely', 'cheers',
+                'with regards', 'with best regards'
+            ]
+            
+            # Only strip if the line is PRIMARILY a closing phrase (not embedded in content)
+            is_closing_line = False
+            for phrase in closing_phrases:
+                if line.startswith(phrase) or line == phrase or line.rstrip(',. ') == phrase:
+                    is_closing_line = True
+                    break
+            
+            if is_closing_line:
                 signature_start_idx = i
                 break
             
@@ -60,8 +75,14 @@ class SignatureHandler:
                 signature_start_idx = i
                 break
             
-            # If we find substantial content, stop looking
-            if len(line) > 50 and not line.endswith(':'):
+            # Check for standalone "Thanks," or "Thank you," as a sign-off (not body text)
+            if line in ['thanks,', 'thanks.', 'thanks!', 'thank you,', 'thank you.', 'thank you!',
+                        'thanks', 'thank you', 'many thanks', 'many thanks,', 'many thanks.']:
+                signature_start_idx = i
+                break
+            
+            # If we find substantial content, stop looking for signatures
+            if len(line) > 30:
                 break
         
         # Keep only content before signature
@@ -71,7 +92,8 @@ class SignatureHandler:
                 signature_start_idx -= 1
             
             cleaned_lines = lines[:signature_start_idx]
-            return '\n'.join(cleaned_lines).rstrip()
+            result = '\n'.join(cleaned_lines).rstrip()
+            return result if result else draft_text.rstrip()
         
         return draft_text.rstrip()
     

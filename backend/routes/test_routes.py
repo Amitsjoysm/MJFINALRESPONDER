@@ -30,7 +30,7 @@ async def test_date_parsing(
                 "matched_text": matched_text,
                 "target_date": target_date.isoformat(),
                 "target_date_human": target_date.strftime("%B %d, %Y at %I:%M %p %Z"),
-                "days_from_now": (target_date - datetime.now(timezone.utc)).days,
+                "days_from_now": (target_date.date() - datetime.now(timezone.utc).date()).days,
                 "context": context[:200]
             }
             for matched_text, target_date, context in results
