@@ -265,12 +265,12 @@ async def process_email(email_id: str):
                         
                         # Delete event from calendar
                         success = False
-                        if provider.provider_type == 'google':
+                        if provider.provider == 'google':
                             success = await calendar_service.delete_event_google(
                                 provider,
                                 related_event.get('event_id')
                             )
-                        elif provider.provider_type == 'outlook':
+                        elif provider.provider == 'microsoft':
                             success = await calendar_service.delete_event_outlook(
                                 provider,
                                 related_event.get('event_id')
@@ -334,12 +334,12 @@ async def process_email(email_id: str):
                             old_event_id = related_event.get('event_id')
                             delete_success = False
                             
-                            if provider.provider_type == 'google':
+                            if provider.provider == 'google':
                                 delete_success = await calendar_service.delete_event_google(
                                     provider,
                                     old_event_id
                                 )
-                            elif provider.provider_type == 'outlook':
+                            elif provider.provider == 'microsoft':
                                 delete_success = await calendar_service.delete_event_outlook(
                                     provider,
                                     old_event_id
@@ -361,12 +361,12 @@ async def process_email(email_id: str):
                             
                             # Create new event in calendar
                             new_event = None
-                            if provider.provider_type == 'google':
+                            if provider.provider == 'google':
                                 new_event = await calendar_service.create_event_google(
                                     provider,
                                     event_data
                                 )
-                            elif provider.provider_type == 'outlook':
+                            elif provider.provider == 'microsoft':
                                 new_event = await calendar_service.create_event_outlook(
                                     provider,
                                     event_data
