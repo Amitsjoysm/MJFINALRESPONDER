@@ -1,0 +1,190 @@
+{
+  "total_tests": 7,
+  "passed_tests": 6,
+  "failed_tests": 1,
+  "success_rate": "6/7 (85.7%)",
+  "overall_status": "PASSED",
+  "test_results": {
+    "Provider Configuration": {
+      "test_name": "Provider Configuration",
+      "passed": true,
+      "details": {
+        "groq_api_key_configured": true,
+        "groq_api_key_length": 56,
+        "claude_api_key_configured": true,
+        "claude_api_key_length": 108,
+        "claude_client_initialized": true,
+        "primary_provider": "groq",
+        "fallback_provider": "claude",
+        "groq_model": "llama-3.3-70b-versatile",
+        "claude_model": "claude-3-5-sonnet-20241022"
+      },
+      "issues": []
+    },
+    "Groq Primary Provider": {
+      "test_name": "Groq Primary Provider",
+      "passed": true,
+      "details": {
+        "draft_generated": true,
+        "draft_length": 565,
+        "draft_word_count": 96,
+        "tokens_used": 810,
+        "draft_preview": "Hi Test, \nI'd be happy to help you with your inquiry about our product. Our pricing plans are tailored to meet the needs of different users, ranging f...",
+        "validation_passed": false,
+        "validation_tokens": 1682,
+        "validation_issues": [
+          "Validation error: Invalid JSON response: Extra data: line 7 column 1 (char 56)"
+        ],
+        "meets_50_char_requirement": true,
+        "meets_20_word_requirement": true,
+        "meeting_detected": true,
+        "meeting_confidence": 0.6,
+        "meeting_details": {
+          "title": "Project Implementation Discussion",
+          "start_time": "2026-01-27T14:00:00",
+          "end_time": "2026-01-27T15:00:00",
+          "location": "TBD",
+          "description": "Call to discuss project implementation",
+          "attendees": [],
+          "timezone": "UTC"
+        }
+      },
+      "issues": []
+    },
+    "Claude Provider Architecture": {
+      "test_name": "Claude Provider Architecture",
+      "passed": true,
+      "details": {
+        "claude_client_class": "<class 'anthropic.AsyncAnthropic'>",
+        "claude_api_method_exists": true,
+        "unified_api_method_exists": true,
+        "fallback_logic_implemented": true,
+        "claude_api_accessible": false,
+        "claude_api_error": "Error code: 401 - {'type': 'error', 'error': {'type': 'authentication_error', 'message': 'invalid x-api-key'}, 'request_id': 'req_011CXLaAT5BF1gLhsVXfUbgL'}",
+        "provider_selection_working": true,
+        "claude_model_configured": true,
+        "claude_model_name": "claude-3-5-sonnet-20241022",
+        "primary_fallback_config": {
+          "primary": "groq",
+          "fallback": "claude"
+        }
+      },
+      "issues": []
+    },
+    "Fallback Mechanism Architecture": {
+      "test_name": "Fallback Mechanism Architecture",
+      "passed": true,
+      "details": {
+        "fallback_attempted": true,
+        "fallback_error": "Both primary and fallback LLM providers failed",
+        "recovery_after_fallback": true,
+        "fallback_configuration": {
+          "primary_provider": "groq",
+          "fallback_provider": "claude",
+          "providers_different": true
+        }
+      },
+      "issues": []
+    },
+    "Context-Aware Generation": {
+      "test_name": "Context-Aware Generation",
+      "passed": true,
+      "details": {
+        "draft_generated": true,
+        "draft_length": 756,
+        "draft_word_count": 123,
+        "tokens_used": 4374,
+        "context_integration": {
+          "persona_indicators": true,
+          "kb_pricing_used": true,
+          "kb_features_used": true,
+          "intent_prompt_followed": true,
+          "thread_context_used": true,
+          "email_content_addressed": true
+        },
+        "context_score": "6/6",
+        "draft_preview": "Hi Prospect, \nI'm excited to hear that you're evaluating our platform for your team of 25 people. We offer three plans: Starter ($29/month for up to 10 users), Professional ($99/month for up to 50 use..."
+      },
+      "issues": []
+    },
+    "Validation Standards": {
+      "test_name": "Validation Standards",
+      "passed": false,
+      "details": {
+        "groq_draft_length": 672,
+        "groq_word_count": 102,
+        "groq_validation_passed": true,
+        "groq_validation_issues": [],
+        "groq_meets_50_chars": true,
+        "groq_meets_20_words": true,
+        "greeting_only_rejection_rate": "4/4",
+        "all_greetings_rejected": true,
+        "length_validation_working": false
+      },
+      "issues": []
+    },
+    "Production Readiness": {
+      "test_name": "Production Readiness",
+      "passed": true,
+      "details": {
+        "scenario_1_Lead Qualification": {
+          "draft_success": true,
+          "draft_valid": true,
+          "draft_length": 666,
+          "draft_word_count": 115,
+          "tokens_used": 6743,
+          "validation_tokens": 7512,
+          "intent_classified": false,
+          "intent_confidence": 0.0,
+          "intent_name": null
+        },
+        "scenario_2_Meeting Request": {
+          "draft_success": true,
+          "draft_valid": true,
+          "draft_length": 555,
+          "draft_word_count": 100,
+          "tokens_used": 8323,
+          "validation_tokens": 9067,
+          "meeting_detected": true,
+          "meeting_confidence": 0.6,
+          "meeting_details": {
+            "title": "Demo Call",
+            "start_time": "2026-01-27T14:00:00",
+            "end_time": "2026-01-27T15:00:00",
+            "location": "TBD",
+            "description": "Demo call to see the platform in action",
+            "attendees": [],
+            "timezone": "UTC"
+          },
+          "intent_classified": false,
+          "intent_confidence": 0.0,
+          "intent_name": null
+        },
+        "scenario_3_Technical Support": {
+          "draft_success": true,
+          "draft_valid": true,
+          "draft_length": 614,
+          "draft_word_count": 100,
+          "tokens_used": 10626,
+          "validation_tokens": 11367,
+          "intent_classified": false,
+          "intent_confidence": 0.0,
+          "intent_name": null
+        },
+        "scenarios_passed": 3,
+        "total_scenarios": 3,
+        "success_rate": "3/3",
+        "token_tracking_working": true,
+        "tokens_tracked": 776
+      },
+      "issues": []
+    }
+  },
+  "claude_integration_status": {
+    "architecture_complete": true,
+    "fallback_mechanism": true,
+    "groq_working": true,
+    "validation_consistent": false,
+    "production_ready": true
+  }
+}

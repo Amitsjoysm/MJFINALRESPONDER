@@ -1,0 +1,1140 @@
+"""Background workers for email processing"""
+import asyncio
+from motor.motor_asyncio import AsyncIOMotorClient
+import logging
+import os
+from datetime import datetime, timezone, timedelta
+
+from config import config
+from services.email_service import EmailService
+from services.ai_agent_service import AIAgentService
+from services.calendar_service import CalendarService
+from models.email_account import EmailAccount
+from models.email import Email
+
+logger = logging.getLogger(__name__)
+
+def format_reply_subject(subject: str) -> str:
+    """Format subject line for reply - adds 'Re:' only if not already present"""
+    if not subject:
+        return "Re: (no subject)"
+    
+    # Check if subject already starts with 'Re:' (case insensitive)
+    subject_lower = subject.strip().lower()
+    if subject_lower.startswith('re:'):
+        return subject.strip()  # Return as-is if already has Re:
+    
+    return f"Re: {subject.strip()}"
+
+# Database connection
+client = AsyncIOMotorClient(config.MONGO_URL)
+db = client[config.DB_NAME]
+
+async def poll_email_account(account_id: str):
+    """Poll single email account for new emails"""
+    try:
+        email_service = EmailService(db)
+        ai_service = AIAgentService(db)
+        
+        # Get account
+        account = await email_service.get_account(account_id)
+        if not account or not account.is_active:
+            return
+        
+        logger.info(f"Polling account {account.email}")
+        
+        # Update sync status
+        await db.email_accounts.update_one(
+            {"id": account_id},
+            {"$set": {"sync_status": "syncing"}}
+        )
+        
+        # Fetch emails based on account type
+        emails = []
+        if account.account_type == 'oauth_gmail':
+            emails = await email_service.fetch_emails_oauth_gmail(account)
+        elif account.account_type == 'oauth_outlook':
+            emails = await email_service.fetch_emails_oauth_outlook(account)
+        elif account.account_type in ['app_password_gmail', 'custom_smtp']:
+            emails = await email_service.fetch_emails_imap(account)
+        
+        logger.info(f"Found {len(emails)} new emails for {account.email}")
+        
+        # Process each email
+        for email_data in emails:
+            # Check if email already exists
+            existing = await db.emails.find_one({
+                "email_account_id": account_id,
+                "message_id": email_data['message_id']
+            })
+            
+            if existing:
+                continue
+            
+            # Save email
+            email_obj = await email_service.save_email(
+                account.user_id,
+                account_id,
+                email_data
+            )
+            
+            # Process email asynchronously
+            await process_email(email_obj.id)
+        
+        # Update sync status
+        await db.email_accounts.update_one(
+            {"id": account_id},
+            {"$set": {
+                "sync_status": "success",
+                "last_sync": datetime.now(timezone.utc).isoformat(),
+                "error_message": None
+            }}
+        )
+    except Exception as e:
+        logger.error(f"Error polling account {account_id}: {e}")
+        await db.email_accounts.update_one(
+            {"id": account_id},
+            {"$set": {
+                "sync_status": "error",
+                "error_message": str(e)
+            }}
+        )
+
+async def add_action(email_id: str, action: str, details: dict, status: str = "success"):
+    """Add action to email history"""
+    await db.emails.update_one(
+        {"id": email_id},
+        {
+            "$push": {
+                "action_history": {
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "action": action,
+                    "details": details,
+                    "status": status
+                }
+            },
+            "$set": {"updated_at": datetime.now(timezone.utc).isoformat()}
+        }
+    )
+
+async def create_automated_followups(email: Email, time_reference: dict, ai_service: AIAgentService):
+    """Create automated follow-ups for time-based requests - scheduled AT target date"""
+    try:
+        from models.follow_up import FollowUp
+        
+        target_date = time_reference['target_date']
+        matched_text = time_reference['matched_text']
+        context = time_reference['context']
+        
+        # Create a single follow-up scheduled AT the target date (not days after)
+        # This allows the system to generate a proper reply when the time comes
+        follow_up = FollowUp(
+            user_id=email.user_id,
+            email_id=email.id,
+            email_account_id=email.email_account_id,
+            thread_id=email.thread_id,
+            scheduled_at=target_date.isoformat(),
+            subject=format_reply_subject(email.subject),
+            body="",  # Will be generated by AI when time comes
+            is_automated=True,
+            follow_up_context=context,
+            base_date=target_date.isoformat(),
+            matched_text=matched_text
+        )
+        await db.follow_ups.insert_one(follow_up.model_dump())
+        
+        follow_ups_created = [{
+            "scheduled_at": target_date.isoformat(),
+            "matched_text": matched_text
+        }]
+        
+        logger.info(f"Created automated follow-up for email {email.id} at target date {target_date.isoformat()}")
+        
+        await add_action(email.id, "automated_followups_created", {
+            "target_date": target_date.isoformat(),
+            "matched_text": matched_text,
+            "follow_ups": follow_ups_created,
+            "count": len(follow_ups_created),
+            "note": "Follow-up scheduled at target date for proper response generation"
+        })
+        
+    except Exception as e:
+        logger.error(f"Error creating automated follow-ups: {e}")
+        await add_action(email.id, "automated_followups_failed", {
+            "error": str(e)
+        }, "failed")
+
+async def process_email(email_id: str):
+    """Process email with AI agents - Enhanced with status tracking and retry logic"""
+    try:
+        from services.email_service import EmailService
+        ai_service = AIAgentService(db)
+        calendar_service = CalendarService(db)
+        email_service = EmailService(db)
+        
+        # Get email
+        email_doc = await db.emails.find_one({"id": email_id})
+        if not email_doc:
+            return
+        
+        email = Email(**email_doc)
+        
+        if email.processed:
+            return
+        
+        logger.info(f"Processing email {email.id}")
+        
+        # Get thread context
+        thread_context = await email_service.get_thread_context(email)
+        
+        # Step 1: Classify intent
+        await db.emails.update_one({"id": email_id}, {"$set": {"status": "classifying"}})
+        await add_action(email_id, "classifying", {"step": "intent_detection"})
+        
+        intent_id, intent_confidence, intent_doc = await ai_service.classify_intent(email, email.user_id)
+        
+        # Get intent name
+        intent_name = None
+        auto_send_enabled = False
+        if intent_id and intent_doc:
+            intent_name = intent_doc.get('name', 'Unknown')
+            auto_send_enabled = intent_doc.get('auto_send', False)
+            logger.info(f"Intent matched for email {email.id}: {intent_name} (confidence: {intent_confidence}, auto_send: {auto_send_enabled})")
+        else:
+            logger.info(f"No intent matched for email {email.id} (subject: {email.subject})")
+        
+        await add_action(email_id, "classified", {
+            "intent_id": intent_id,
+            "intent_name": intent_name,
+            "confidence": intent_confidence
+        })
+        
+        # Step 1.25: Check for Inbound Lead with Autonomous Qualification
+        from services.lead_agent_service import LeadAgentService
+        from services.lead_nurturing_integration_service import LeadNurturingIntegrationService
+        
+        lead_service = LeadAgentService(db)
+        lead_integration_service = LeadNurturingIntegrationService(db)
+        
+        is_lead = await lead_service.is_inbound_lead(intent_id, email.user_id)
+        if is_lead:
+            logger.info(f"✓ Inbound lead detected for email {email.id}")
+            await add_action(email_id, "inbound_lead_detected", {
+                "intent_name": intent_name,
+                "lead_email": email.from_email
+            })
+            
+            # NEW AUTONOMOUS FLOW - Process lead through qualification
+            should_create_inbound_lead, lead_stage, questions_to_ask, existing_lead_id = await lead_integration_service.process_lead_email(
+                user_id=email.user_id,
+                email_id=email.id,
+                email_content=email.body,
+                from_email=email.from_email,
+                intent_doc=intent_doc,
+                thread_context=thread_context if thread_context else []
+            )
+            
+            logger.info(f"Lead processing result: create={should_create_inbound_lead}, stage={lead_stage}, questions={len(questions_to_ask)}")
+            
+            # Store questions to ask in email for draft generation
+            if questions_to_ask:
+                await db.emails.update_one(
+                    {"id": email_id},
+                    {"$set": {"nurturing_questions_to_ask": questions_to_ask}}
+                )
+                logger.info(f"Stored {len(questions_to_ask)} nurturing questions for email {email_id}")
+            
+            # Create inbound lead only if qualified or max attempts reached
+            if should_create_inbound_lead and lead_stage in ['qualified', 'unqualified']:
+                # Extract lead data using AI (for qualified/unqualified leads)
+                extracted_data = await lead_service.extract_lead_data(email)
+                
+                await add_action(email_id, "lead_data_extracted", {
+                    "extraction_confidence": extracted_data.extraction_confidence,
+                    "fields_extracted": {
+                        "name": extracted_data.name,
+                        "company": extracted_data.company_name,
+                        "phone": extracted_data.phone,
+                        "job_title": extracted_data.job_title
+                    }
+                })
+                
+                # Create or update lead in inbound_leads collection
+                try:
+                    # If existing_lead_id exists, it's already in awaiting_info status
+                    # Just update it with final status
+                    if existing_lead_id:
+                        logger.info(f"✓ Lead {existing_lead_id} final status: {lead_stage}")
+                        # The status is already updated by integration service
+                        
+                        # Get the updated lead
+                        lead_doc = await db.inbound_leads.find_one({"id": existing_lead_id})
+                        if lead_doc:
+                            from models.inbound_lead import InboundLead
+                            lead = InboundLead(**lead_doc)
+                            
+                            await add_action(email_id, "lead_finalized", {
+                                "lead_id": lead.id,
+                                "stage": lead.stage,
+                                "score": lead.score,
+                                "qualification_score": lead.qualification_score
+                            })
+                    else:
+                        # Fallback: Create lead using old method (if integration failed)
+                        lead = await lead_service.create_lead(
+                            user_id=email.user_id,
+                            email=email,
+                            intent_id=intent_id,
+                            intent_name=intent_name,
+                            extracted_data=extracted_data
+                        )
+                        
+                        logger.info(f"✓ Lead created (fallback): {lead.id} ({lead.lead_email}) - Stage: {lead.stage}")
+                        
+                        await add_action(email_id, "lead_created", {
+                            "lead_id": lead.id,
+                            "stage": lead.stage,
+                            "score": lead.score,
+                            "lead_name": lead.lead_name,
+                            "company": lead.company_name
+                        })
+                
+                except Exception as e:
+                    logger.error(f"Error creating lead: {e}")
+                    await add_action(email_id, "lead_creation_failed", {
+                        "error": str(e)
+                    }, "failed")
+        
+        # Step 1.5: Check if this is a simple acknowledgment (no follow-up needed)
+        is_simple_ack = ai_service.is_simple_acknowledgment(email)
+        automated_followups_created = False
+        is_time_based_followup = False
+        
+        if is_simple_ack:
+            logger.info(f"Email {email.id} is a simple acknowledgment - skipping follow-ups")
+            await add_action(email_id, "simple_acknowledgment_detected", {
+                "note": "No follow-ups will be created for simple acknowledgment replies"
+            })
+        else:
+            # Detect time-based follow-up requests
+            time_references = await ai_service.detect_time_reference(email)
+            if time_references:
+                logger.info(f"Detected {len(time_references)} time references in email {email.id}")
+                await add_action(email_id, "time_references_detected", {
+                    "count": len(time_references),
+                    "references": [
+                        {
+                            "matched_text": ref['matched_text'],
+                            "target_date": ref['target_date'].isoformat(),
+                            "context": ref['context'][:100]
+                        } for ref in time_references
+                    ]
+                })
+                
+                # Create automated follow-ups for ONLY the FIRST time reference
+                # This prevents duplicate follow-ups when multiple references exist
+                if time_references:
+                    await create_automated_followups(
+                        email=email,
+                        time_reference=time_references[0],  # Use only first reference
+                        ai_service=ai_service
+                    )
+                    automated_followups_created = True
+                    is_time_based_followup = True
+                    logger.info(f"Created automated follow-ups based on time reference: {time_references[0]['matched_text']}")
+                    
+                    # Send simple acknowledgment immediately for time-based follow-up requests
+                    account = await email_service.get_account(email.email_account_id)
+                    if account and auto_send_enabled:
+                        from models.email import EmailSend
+                        
+                        # Create simple acknowledgment message
+                        target_date_str = time_references[0]['target_date'].strftime("%B %d, %Y")
+                        simple_ack_message = f"Thank you for your email. I'll follow up with you on {target_date_str}."
+                        
+                        reply = EmailSend(
+                            email_account_id=email.email_account_id,
+                            to_email=[email.from_email],
+                            subject=format_reply_subject(email.subject),
+                            body=simple_ack_message
+                        )
+                        
+                        sent = False
+                        if account.account_type == 'oauth_gmail':
+                            result = await email_service.send_email_oauth_gmail(account, reply, email.thread_id)
+                            sent = result.get("success", False)
+                        elif account.account_type == 'oauth_outlook':
+                            result = await email_service.send_email_oauth_outlook(account, reply, email.thread_id)
+                            sent = result.get("success", False)
+                        else:
+                            sent = await email_service.send_email_smtp(account, reply)
+                        
+                        if sent:
+                            # Mark email as sent with simple acknowledgment
+                            await db.emails.update_one(
+                                {"id": email_id},
+                                {"$set": {
+                                    "intent_detected": intent_id,
+                                    "intent_name": intent_name,
+                                    "intent_confidence": intent_confidence,
+                                    "status": "sent",
+                                    "replied": True,
+                                    "reply_sent_at": datetime.now(timezone.utc).isoformat(),
+                                    "draft_content": simple_ack_message,
+                                    "draft_generated": True,
+                                    "draft_validated": True,
+                                    "processed": True
+                                }}
+                            )
+                            
+                            await add_action(email_id, "simple_acknowledgment_sent", {
+                                "to": email.from_email,
+                                "message": simple_ack_message,
+                                "target_date": target_date_str,
+                                "note": "Simple acknowledgment sent. Full response will be generated at target date."
+                            })
+                            
+                            logger.info(f"Sent simple acknowledgment for time-based follow-up email {email.id}")
+                            # Skip further processing - we've already sent the acknowledgment
+                            return
+        
+        # Step 2: Detect meeting
+        is_meeting, meeting_confidence, meeting_details = await ai_service.detect_meeting(email, thread_context)
+        
+        # Log meeting detection result
+        if is_meeting:
+            if meeting_confidence >= 0.8:
+                logger.info(f"Meeting detected with HIGH confidence ({meeting_confidence}) - will create calendar event")
+            elif meeting_confidence >= 0.5:
+                logger.info(f"Meeting detected with MEDIUM confidence ({meeting_confidence}) - draft will ask for time confirmation")
+            else:
+                logger.info(f"Meeting detected with LOW confidence ({meeting_confidence}) - draft will ask for meeting details")
+        
+        await add_action(email_id, "meeting_detection", {
+            "detected": is_meeting,
+            "confidence": meeting_confidence,
+            "details": meeting_details if is_meeting else None,
+            "will_create_event": is_meeting and meeting_confidence >= 0.8
+        })
+        
+        update_data = {
+            "intent_detected": intent_id,
+            "intent_name": intent_name,
+            "intent_confidence": intent_confidence,
+            "meeting_detected": is_meeting,
+            "meeting_confidence": meeting_confidence,
+            "updated_at": datetime.now(timezone.utc).isoformat()
+        }
+        
+        # Step 3: If meeting detected with HIGH confidence (>= 0.8), create calendar event
+        # Lower confidence means time needs confirmation - draft will ask for it
+        event_created = None
+        has_conflict = False
+        conflict_details = []
+        
+        if is_meeting and meeting_confidence >= 0.8 and meeting_details:
+            # High confidence means time is confirmed - create event
+            logger.info(f"Meeting confirmed with high confidence ({meeting_confidence}), creating calendar event")
+            
+            provider_doc = await db.calendar_providers.find_one({
+                "user_id": email.user_id,
+                "is_active": True
+            })
+            
+            if provider_doc:
+                from models.calendar import CalendarProvider
+                provider = CalendarProvider(**provider_doc)
+                
+                # Check for conflicts
+                conflicts = await calendar_service.check_conflicts(
+                    provider.id,
+                    meeting_details['start_time'],
+                    meeting_details['end_time']
+                )
+                
+                if conflicts:
+                    # Log conflicts but still create event (user can decide later)
+                    has_conflict = True
+                    conflict_details = [
+                        {
+                            "title": c.title,
+                            "start_time": c.start_time,
+                            "end_time": c.end_time
+                        } for c in conflicts
+                    ]
+                    
+                    await add_action(email_id, "calendar_conflicts_detected", {
+                        "conflicts": conflict_details,
+                        "message": "Meeting conflicts detected. Event will be created for review."
+                    })
+                    
+                    logger.warning(f"Meeting conflicts detected for email {email.id}: {len(conflicts)} conflicts")
+                    
+                    # Store conflict info in meeting details
+                    meeting_details['has_conflicts'] = True
+                    meeting_details['conflicts'] = conflict_details
+                
+                # Create event even if there are conflicts (user can resolve)
+                # Create event based on provider type
+                if provider.provider == 'google':
+                    event_result = await calendar_service.create_event_google(provider, meeting_details)
+                elif provider.provider == 'microsoft':
+                    event_result = await calendar_service.create_event_outlook(provider, meeting_details)
+                else:
+                    logger.error(f"Unsupported calendar provider: {provider.provider}")
+                    event_result = None
+                
+                if event_result and event_result.get('event_id'):
+                    # Update meeting details with Google Calendar info
+                    meeting_details['event_id'] = event_result['event_id']
+                    meeting_details['meet_link'] = event_result.get('meet_link')
+                    meeting_details['html_link'] = event_result.get('html_link')
+                    meeting_details['detected_from_email'] = True
+                    meeting_details['confidence'] = meeting_confidence
+                    
+                    event_created = await calendar_service.save_event(
+                        email.user_id,
+                        provider.id,
+                        meeting_details,
+                        email.id,
+                        email.thread_id  # Pass thread_id for reminder sending
+                    )
+                    
+                    # Store event for draft generation (convert to dict for MongoDB compatibility)
+                    update_data['calendar_event'] = event_created.model_dump() if hasattr(event_created, 'model_dump') else event_created
+                    
+                    await add_action(email_id, "calendar_event_created", {
+                        "event_id": event_result['event_id'],
+                        "title": meeting_details.get('title'),
+                        "start_time": meeting_details.get('start_time'),
+                        "meet_link": event_result.get('meet_link'),
+                        "has_conflicts": has_conflict
+                    })
+                    
+                    logger.info(f"Created calendar event for email {email.id} with Meet link: {event_result.get('meet_link')}")
+                    
+                    # Send calendar notification email with event details
+                    await send_calendar_notification(
+                        email,
+                        event_created,
+                        email_service,
+                        has_conflict=has_conflict,
+                        conflict_details=conflict_details
+                    )
+                    logger.info(f"Sent calendar notification email for event {event_result['event_id']}")
+                    
+                    # Update lead if this is from an inbound lead
+                    if is_lead:
+                        try:
+                            # Find lead by email
+                            lead_doc = await db.inbound_leads.find_one({
+                                "user_id": email.user_id,
+                                "lead_email": email.from_email,
+                                "is_active": True
+                            })
+                            
+                            if lead_doc:
+                                await lead_service.record_meeting_scheduled(
+                                    lead_doc['id'],
+                                    meeting_details.get('start_time'),
+                                    event_result['event_id']
+                                )
+                                logger.info(f"✓ Meeting recorded for lead {lead_doc['id']}")
+                        except Exception as e:
+                            logger.error(f"Error updating lead meeting: {e}")
+                    
+                else:
+                    await add_action(email_id, "calendar_event_creation_failed", {
+                        "message": "Failed to create event in Google Calendar"
+                    }, "failed")
+        
+        # Step 4: Generate draft with retry logic (max 2 attempts)
+        await db.emails.update_one({"id": email_id}, {"$set": {"status": "drafting"}})
+        
+        draft = None
+        total_tokens = 0
+        max_retries = 2
+        
+        for attempt in range(max_retries + 1):
+            await add_action(email_id, "drafting", {
+                "attempt": attempt + 1,
+                "max_attempts": max_retries + 1
+            })
+            
+            # Get nurturing questions if they exist
+            email_doc = await db.emails.find_one({"id": email_id})
+            nurturing_questions = email_doc.get('nurturing_questions_to_ask', []) if email_doc else []
+            
+            draft, tokens = await ai_service.generate_draft(
+                email, 
+                email.user_id, 
+                intent_id,
+                thread_context,
+                validation_issues=update_data.get('validation_issues') if attempt > 0 else None,
+                calendar_event=update_data.get('calendar_event'),
+                meeting_info={
+                    "detected": is_meeting,
+                    "confidence": meeting_confidence,
+                    "details": meeting_details,
+                    "event_created": event_created is not None
+                } if is_meeting else None,
+                nurturing_questions=nurturing_questions if nurturing_questions else None
+            )
+            total_tokens += tokens
+            
+            await add_action(email_id, "draft_generated", {
+                "attempt": attempt + 1,
+                "tokens": tokens,
+                "draft_length": len(draft) if draft else 0
+            })
+            
+            # Step 5: Validate draft
+            await db.emails.update_one({"id": email_id}, {"$set": {"status": "validating"}})
+            await add_action(email_id, "validating", {"attempt": attempt + 1})
+            
+            valid, issues, _ = await ai_service.validate_draft(
+                draft, 
+                email, 
+                thread_context
+            )
+            
+            await add_action(email_id, "validated", {
+                "valid": valid,
+                "issues": issues,
+                "attempt": attempt + 1
+            })
+            
+            if valid:
+                update_data['draft_generated'] = True
+                update_data['draft_content'] = draft
+                update_data['draft_validated'] = True
+                update_data['validation_issues'] = []
+                update_data['draft_retry_count'] = attempt
+                update_data['status'] = 'draft_ready'
+                break
+            else:
+                update_data['validation_issues'] = issues
+                update_data['draft_retry_count'] = attempt
+                
+                if attempt < max_retries:
+                    logger.info(f"Draft validation failed for email {email.id}, retrying (attempt {attempt + 1}/{max_retries})")
+                    await add_action(email_id, "retry_draft", {
+                        "reason": "validation_failed",
+                        "issues": issues,
+                        "attempt": attempt + 1
+                    })
+                else:
+                    logger.warning(f"Draft validation failed after {max_retries} retries for email {email.id}, escalating")
+                    update_data['status'] = 'escalated'
+                    update_data['draft_generated'] = True
+                    update_data['draft_content'] = draft
+                    update_data['draft_validated'] = False
+                    await add_action(email_id, "escalated", {
+                        "reason": "validation_failed_max_retries",
+                        "issues": issues,
+                        "total_attempts": attempt + 1
+                    }, "failed")
+        
+        update_data['tokens_used'] = total_tokens
+        
+        # Step 6: Auto-send if intent allows and draft is valid
+        if intent_id and update_data.get('draft_validated'):
+            intent_doc = await db.intents.find_one({"id": intent_id})
+            if intent_doc and intent_doc.get('auto_send'):
+                logger.info(f"Auto-send conditions met for email {email.id}. Sending reply...")
+                await db.emails.update_one({"id": email_id}, {"$set": {"status": "sending"}})
+                await add_action(email_id, "sending", {"auto_send": True})
+                
+                account = await email_service.get_account(email.email_account_id)
+                
+                if account:
+                    from models.email import EmailSend
+                    
+                    # Prepare threading headers for proper conversation continuity
+                    # Get original email's Message-ID for In-Reply-To header
+                    reply_to_message_id = None
+                    references_list = []
+                    
+                    # Get Message-ID from email headers (Gmail stores it as message_id in our DB)
+                    # But we need the actual RFC Message-ID header, not Gmail's internal ID
+                    # For Gmail, we'll use the message_id we stored
+                    original_email_doc = await db.emails.find_one({"id": email_id})
+                    if original_email_doc:
+                        # Try to get Message-ID header if we stored it
+                        # Otherwise use Gmail message_id
+                        reply_to_message_id = original_email_doc.get('message_id')
+                        
+                        # Build references list from thread
+                        if original_email_doc.get('references'):
+                            references_list = original_email_doc['references']
+                        
+                        # Add the in_reply_to to references if present
+                        if original_email_doc.get('in_reply_to'):
+                            if original_email_doc['in_reply_to'] not in references_list:
+                                references_list.append(original_email_doc['in_reply_to'])
+                        
+                        # Add current message to references
+                        if reply_to_message_id and reply_to_message_id not in references_list:
+                            references_list.append(reply_to_message_id)
+                    
+                    logger.info(f"Sending reply with threading: thread_id={email.thread_id}, reply_to={reply_to_message_id}, refs={len(references_list)}")
+                    
+                    reply = EmailSend(
+                        email_account_id=email.email_account_id,
+                        to_email=[email.from_email],
+                        subject=format_reply_subject(email.subject),
+                        body=draft
+                    )
+                    
+                    sent = False
+                    if account.account_type == 'oauth_gmail':
+                        result = await email_service.send_email_oauth_gmail(
+                            account, 
+                            reply, 
+                            email.thread_id,
+                            reply_to_message_id,
+                            references_list
+                        )
+                        sent = result.get("success", False)
+                    elif account.account_type == 'oauth_outlook':
+                        result = await email_service.send_email_oauth_outlook(account, reply, email.thread_id)
+                        sent = result.get("success", False)
+                    else:
+                        sent = await email_service.send_email_smtp(account, reply)
+                    
+                    if sent:
+                        update_data['status'] = 'sent'
+                        update_data['replied'] = True
+                        update_data['reply_sent_at'] = datetime.now(timezone.utc).isoformat()
+                        await add_action(email_id, "sent", {
+                            "to": email.from_email,
+                            "auto_send": True
+                        })
+                        logger.info(f"Auto-sent reply for email {email.id}")
+                        
+                        # Update lead stage if applicable (auto-transition)
+                        if is_lead:
+                            try:
+                                # Find lead
+                                lead_doc = await db.inbound_leads.find_one({
+                                    "user_id": email.user_id,
+                                    "lead_email": email.from_email,
+                                    "is_active": True
+                                })
+                                
+                                if lead_doc:
+                                    from models.inbound_lead import InboundLead
+                                    lead = InboundLead(**lead_doc)
+                                    
+                                    # Update lead with email sent
+                                    await lead_service.update_lead_from_email(lead.id, email)
+                                    
+                                    # Check for auto stage transition
+                                    new_stage = await lead_service.check_auto_stage_transition(lead)
+                                    if new_stage:
+                                        await lead_service.transition_stage(
+                                            lead.id,
+                                            new_stage,
+                                            "Auto-transition based on email sent",
+                                            "system"
+                                        )
+                                        logger.info(f"✓ Lead {lead.id} auto-transitioned: {lead.stage} → {new_stage}")
+                            except Exception as e:
+                                logger.error(f"Error updating lead after email sent: {e}")
+                        
+                        # Create automatic follow-ups ONLY if:
+                        # 1. Follow-ups are enabled for the account
+                        # 2. Automated time-based follow-ups were NOT already created
+                        # 3. This is NOT a simple acknowledgment
+                        if account.follow_up_enabled and not automated_followups_created and not is_simple_ack:
+                            from models.follow_up import FollowUp
+                            
+                            # Create multiple AI-powered context-aware follow-ups
+                            follow_ups_created = []
+                            for i in range(account.follow_up_count):
+                                days_offset = account.follow_up_days * (i + 1)
+                                follow_up_date = datetime.now(timezone.utc) + timedelta(days=days_offset)
+                                
+                                # Store follow-up metadata for AI generation
+                                # Body will be generated by AI when it's time to send
+                                # Include context about which follow-up number this is
+                                follow_up_context = {
+                                    "follow_up_number": i + 1,
+                                    "total_follow_ups": account.follow_up_count,
+                                    "days_since_sent": days_offset,
+                                    "original_subject": email.subject,
+                                    "original_body": email.body[:500],  # Store snippet for context
+                                    "draft_sent": draft[:500] if draft else ""  # Our response for reference
+                                }
+                                
+                                follow_up = FollowUp(
+                                    user_id=email.user_id,
+                                    email_id=email.id,
+                                    email_account_id=email.email_account_id,
+                                    thread_id=email.thread_id,  # Store thread_id for same conversation
+                                    scheduled_at=follow_up_date.isoformat(),
+                                    subject=format_reply_subject(email.subject),
+                                    body="",  # Will be generated by AI when sending
+                                    is_automated=True,  # Mark as automated so AI generates content
+                                    follow_up_context=f"Follow-up #{i+1} of {account.follow_up_count}",
+                                    base_date=follow_up_date.isoformat(),
+                                    matched_text=f"standard follow-up {i+1}"
+                                )
+                                
+                                await db.follow_ups.insert_one(follow_up.model_dump())
+                                follow_ups_created.append({
+                                    "number": i + 1,
+                                    "scheduled_at": follow_up_date.isoformat(),
+                                    "days_from_now": days_offset
+                                })
+                            
+                            await add_action(email_id, "follow_ups_scheduled", {
+                                "follow_ups": follow_ups_created,
+                                "total_count": len(follow_ups_created),
+                                "type": "AI-powered context-aware"
+                            })
+                            logger.info(f"✓ Scheduled {len(follow_ups_created)} AI-powered context-aware follow-ups for email {email.id}")
+                        elif automated_followups_created:
+                            logger.info(f"Skipping standard follow-ups for email {email.id} - automated time-based follow-ups already created")
+                        elif is_simple_ack:
+                            logger.info(f"Skipping follow-ups for email {email.id} - simple acknowledgment detected")
+                        else:
+                            logger.info(f"Follow-ups disabled for account {account.email}")
+                    else:
+                        update_data['status'] = 'error'
+                        update_data['error_message'] = "Failed to send email"
+                        await add_action(email_id, "send_failed", {"error": "Failed to send"}, "failed")
+                        logger.error(f"Failed to send email {email.id}")
+            else:
+                logger.info(f"Auto-send not triggered for email {email.id}: intent has auto_send=False")
+        else:
+            reason = []
+            if not intent_id:
+                reason.append("no intent matched")
+            if not update_data.get('draft_validated'):
+                reason.append("draft not validated")
+            logger.info(f"Auto-send skipped for email {email.id}: {', '.join(reason)}")
+        
+        # Mark as processed
+        update_data['processed'] = True
+        
+        # Update email in DB
+        await db.emails.update_one({"id": email_id}, {"$set": update_data})
+        
+        # Track tokens for user
+        if total_tokens > 0:
+            await db.users.update_one(
+                {"id": email.user_id},
+                {"$inc": {"tokens_used": total_tokens}}
+            )
+        
+        logger.info(f"Email {email.id} processed successfully with status: {update_data['status']}")
+    except Exception as e:
+        logger.error(f"Error processing email {email_id}: {e}")
+        await db.emails.update_one(
+            {"id": email_id},
+            {"$set": {
+                "processed": True,
+                "status": "error",
+                "error_message": str(e),
+                "updated_at": datetime.now(timezone.utc).isoformat()
+            }}
+        )
+        await add_action(email_id, "error", {"message": str(e)}, "failed")
+
+async def send_calendar_notification(email: Email, event, email_service, has_conflict=False, conflict_details=None):
+    """Send email notification about created calendar event"""
+    try:
+        account = await email_service.get_account(email.email_account_id)
+        if not account:
+            return
+        
+        from models.email import EmailSend
+        
+        # Build conflict warning if applicable
+        conflict_warning = ""
+        if has_conflict and conflict_details:
+            conflict_warning = f"""
+
+⚠️  SCHEDULING CONFLICT DETECTED  ⚠️
+
+The following existing event(s) conflict with this meeting:
+"""
+            for conflict in conflict_details:
+                conflict_warning += f"""
+• {conflict['title']}
+  Time: {conflict['start_time']} to {conflict['end_time']}
+"""
+            conflict_warning += """
+Please review and reschedule if needed.
+"""
+        
+        # Format event details
+        event_body = f"""A calendar event has been created based on your email:
+
+Event Details:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Title: {event.title}
+Start: {event.start_time}
+End: {event.end_time}
+Location: {event.location or 'Not specified'}
+Description: {event.description or 'No description'}
+Attendees: {', '.join(event.attendees) if event.attendees else 'None'}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+{conflict_warning}
+
+This event has been added to your calendar. You will receive a reminder 1 hour before the meeting.
+
+Best regards,
+Your AI Email Assistant"""
+        
+        notification = EmailSend(
+            email_account_id=email.email_account_id,
+            to_email=[email.from_email],
+            subject=f"Calendar Event Created: {event.title}",
+            body=event_body
+        )
+        
+        sent = False
+        if account.account_type == 'oauth_gmail':
+            result = await email_service.send_email_oauth_gmail(account, notification, email.thread_id)
+            sent = result.get("success", False)
+        elif account.account_type == 'oauth_outlook':
+            result = await email_service.send_email_oauth_outlook(account, notification, email.thread_id)
+            sent = result.get("success", False)
+        else:
+            sent = await email_service.send_email_smtp(account, notification)
+        
+        if sent:
+            logger.info(f"Sent calendar notification for event {event.id}")
+            await add_action(email.id, "calendar_notification_sent", {
+                "event_id": event.id,
+                "event_title": event.title
+            })
+    except Exception as e:
+        logger.error(f"Error sending calendar notification: {e}")
+
+async def poll_all_accounts():
+    """Poll all active email accounts"""
+    try:
+        accounts = await db.email_accounts.find({"is_active": True}).to_list(1000)
+        
+        logger.info(f"Polling {len(accounts)} active accounts")
+        
+        tasks = [poll_email_account(account['id']) for account in accounts]
+        await asyncio.gather(*tasks, return_exceptions=True)
+    except Exception as e:
+        logger.error(f"Error polling all accounts: {e}")
+
+async def check_follow_ups():
+    """Check and send scheduled follow-ups"""
+    try:
+        now = datetime.now(timezone.utc).isoformat()
+        
+        # Get pending follow-ups
+        follow_ups = await db.follow_ups.find({
+            "status": "pending",
+            "scheduled_at": {"$lte": now}
+        }).to_list(100)
+        
+        logger.info(f"Found {len(follow_ups)} follow-ups to send")
+        
+        email_service = EmailService(db)
+        ai_service = AIAgentService(db)
+        
+        for follow_up_doc in follow_ups:
+            from models.follow_up import FollowUp
+            from models.email import EmailSend
+            
+            follow_up = FollowUp(**follow_up_doc)
+            
+            # Get account
+            account = await email_service.get_account(follow_up.email_account_id)
+            if not account:
+                continue
+            
+            # Get original email
+            email_doc = await db.emails.find_one({"id": follow_up.email_id})
+            if not email_doc:
+                continue
+            
+            email = Email(**email_doc)
+            
+            # Handle automated follow-ups differently
+            if follow_up.is_automated:
+                logger.info(f"Processing automated follow-up {follow_up.id}")
+                
+                # Get thread context
+                thread_context = await email_service.get_thread_context(email)
+                
+                # Prepare enhanced follow-up context for draft generation
+                follow_up_context = {
+                    'is_automated_followup': True,
+                    'base_date': follow_up.base_date,
+                    'matched_text': follow_up.matched_text,
+                    'original_context': follow_up.follow_up_context,
+                    'follow_up_type': 'standard' if 'standard follow-up' in follow_up.matched_text else 'time-based',
+                    'conversation_history': thread_context  # Include full thread for context
+                }
+                
+                # Generate draft using AI with full conversation context
+                try:
+                    draft, tokens = await ai_service.generate_draft(
+                        email=email,
+                        user_id=email.user_id,
+                        intent_id=email.intent_detected,
+                        thread_context=thread_context,
+                        follow_up_context=follow_up_context
+                    )
+                    
+                    # Validate draft
+                    valid, issues, _ = await ai_service.validate_draft(
+                        draft,
+                        email,
+                        thread_context
+                    )
+                    
+                    if not valid:
+                        logger.warning(f"Automated follow-up draft validation failed for {follow_up.id}: {issues}")
+                        # Try one more time with validation feedback
+                        draft, tokens = await ai_service.generate_draft(
+                            email=email,
+                            user_id=email.user_id,
+                            intent_id=email.intent_detected,
+                            thread_context=thread_context,
+                            validation_issues=issues,
+                            follow_up_context=follow_up_context
+                        )
+                        
+                        # Validate again
+                        valid, issues, _ = await ai_service.validate_draft(
+                            draft,
+                            email,
+                            thread_context
+                        )
+                    
+                    if valid:
+                        # Send the AI-generated follow-up
+                        follow_up_email = EmailSend(
+                            email_account_id=follow_up.email_account_id,
+                            to_email=[email.from_email],
+                            subject=format_reply_subject(email.subject),
+                            body=draft
+                        )
+                    else:
+                        logger.error(f"Automated follow-up {follow_up.id} failed validation twice, skipping")
+                        await db.follow_ups.update_one(
+                            {"id": follow_up.id},
+                            {"$set": {
+                                "status": "cancelled",
+                                "cancellation_reason": "Draft validation failed after retries"
+                            }}
+                        )
+                        continue
+                        
+                except Exception as e:
+                    logger.error(f"Error generating automated follow-up draft: {e}")
+                    continue
+            else:
+                # Manual follow-up - use pre-written body
+                follow_up_email = EmailSend(
+                    email_account_id=follow_up.email_account_id,
+                    to_email=[email.from_email],
+                    subject=follow_up.subject,
+                    body=follow_up.body
+                )
+            
+            # Send follow-up
+            sent = False
+            if account.account_type == 'oauth_gmail':
+                # Send in same thread if thread_id exists
+                result = await email_service.send_email_oauth_gmail(account, follow_up_email, follow_up.thread_id)
+                sent = result.get("success", False)
+            elif account.account_type == 'oauth_outlook':
+                # Send in same thread if thread_id exists
+                result = await email_service.send_email_oauth_outlook(account, follow_up_email, follow_up.thread_id)
+                sent = result.get("success", False)
+            else:
+                sent = await email_service.send_email_smtp(account, follow_up_email)
+            
+            if sent:
+                await db.follow_ups.update_one(
+                    {"id": follow_up.id},
+                    {"$set": {
+                        "status": "sent",
+                        "sent_at": datetime.now(timezone.utc).isoformat(),
+                        "body": follow_up_email.body  # Store the actual sent body
+                    }}
+                )
+                logger.info(f"Sent {'automated' if follow_up.is_automated else 'manual'} follow-up {follow_up.id}")
+    except Exception as e:
+        logger.error(f"Error checking follow-ups: {e}")
+
+async def check_reminders():
+    """Check and send calendar reminders"""
+    try:
+        from datetime import timedelta
+        
+        now = datetime.now(timezone.utc)
+        reminder_time = (now + timedelta(hours=1)).isoformat()
+        
+        # Get events starting in ~1 hour that haven't had reminders sent
+        events = await db.calendar_events.find({
+            "start_time": {"$gte": now.isoformat(), "$lte": reminder_time},
+            "reminder_sent": False
+        }).to_list(100)
+        
+        logger.info(f"Found {len(events)} events needing reminders")
+        
+        calendar_service = CalendarService(db)
+        email_service = EmailService(db)
+        
+        from models.calendar import CalendarEvent
+        
+        for event_doc in events:
+            event = CalendarEvent(**event_doc)
+            await calendar_service.send_reminder(event, email_service, event.user_id)
+    except Exception as e:
+        logger.error(f"Error checking reminders: {e}")
+
+# Main worker loop
+async def run_worker():
+    """Main worker loop"""
+    logger.info("Starting email worker...")
+    
+    poll_counter = 0
+    follow_up_counter = 0
+    reminder_counter = 0
+    
+    while True:
+        try:
+            # Poll emails every 60 seconds
+            if poll_counter % config.EMAIL_POLL_INTERVAL == 0:
+                await poll_all_accounts()
+                poll_counter = 0
+            
+            # Check follow-ups every 5 minutes
+            if follow_up_counter % config.FOLLOW_UP_CHECK_INTERVAL == 0:
+                await check_follow_ups()
+                follow_up_counter = 0
+            
+            # Check reminders every hour
+            if reminder_counter % config.REMINDER_CHECK_INTERVAL == 0:
+                await check_reminders()
+                reminder_counter = 0
+            
+            await asyncio.sleep(1)
+            poll_counter += 1
+            follow_up_counter += 1
+            reminder_counter += 1
+        except Exception as e:
+            logger.error(f"Worker error: {e}")
+            await asyncio.sleep(5)
+
+if __name__ == "__main__":
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
+    
+    asyncio.run(run_worker())
