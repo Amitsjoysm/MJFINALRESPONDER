@@ -650,6 +650,7 @@ async def process_email(email_id: str):
             "auto_send": auto_send_enabled,
             "meeting_detected": is_meeting,
             "meeting_confidence": meeting_confidence,
+            "calendar_action": calendar_event_action,  # NEW: Store calendar action
             "updated_at": datetime.now(timezone.utc).isoformat()
         }
         
@@ -799,6 +800,7 @@ async def process_email(email_id: str):
                 thread_context,
                 validation_issues=update_data.get('validation_issues') if attempt > 0 else None,
                 calendar_event=update_data.get('calendar_event'),
+                calendar_action=update_data.get('calendar_action'),  # NEW: Pass calendar action
                 meeting_info={
                     "detected": is_meeting,
                     "confidence": meeting_confidence,

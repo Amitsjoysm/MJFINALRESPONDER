@@ -474,10 +474,6 @@ Your Email Assistant
         except Exception as e:
             logger.error(f"Error sending reminder: {e}")
 
-import uuid
-
-
-    
     async def delete_event_google(self, provider: CalendarProvider, event_id: str) -> bool:
         """Delete/cancel event from Google Calendar"""
         try:

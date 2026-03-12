@@ -514,7 +514,8 @@ If no clear meeting detected, set is_meeting to false and confidence to 0.0."""
         calendar_event = None,
         follow_up_context: Optional[Dict] = None,
         meeting_info: Optional[Dict] = None,
-        nurturing_questions: List[Dict] = None
+        nurturing_questions: List[Dict] = None,
+        calendar_action: Optional[Dict] = None  # NEW: Calendar action parameter
     ) -> Tuple[str, int]:
         """
         Generate email draft using Groq LLM with full context
@@ -543,6 +544,7 @@ If no clear meeting detected, set is_meeting to false and confidence to 0.0."""
                 thread_context=thread_context,
                 validation_issues=validation_issues,
                 calendar_event=calendar_event,
+                calendar_action=calendar_action,  # NOW PASSED FROM PARAMETER
                 current_time=current_time,
                 follow_up_context=follow_up_context,
                 meeting_info=meeting_info,
@@ -639,11 +641,138 @@ If no clear meeting detected, set is_meeting to false and confidence to 0.0."""
         current_time: str,
         follow_up_context: Optional[Dict] = None,
         meeting_info: Optional[Dict] = None,
-        nurturing_questions: List[Dict] = None
+        nurturing_questions: List[Dict] = None,
+        calendar_action: Optional[Dict] = None  # NEW: Calendar action info
     ) -> str:
         """Build comprehensive draft generation prompt"""
         
         prompt = f"Current Date & Time: {current_time}\n\n"
+        
+        # ====================================================================
+        # CALENDAR ACTION HANDLING (Cancellation/Rescheduling)
+        # ====================================================================
+        if calendar_action:
+            action_type = calendar_action.get('action')
+            
+            # CANCELLATION
+            if action_type == 'cancelled':
+                event = calendar_action.get('event', {})
+                event_title = event.get('title', 'Meeting')
+                event_time = event.get('start_time', '')
+                
+                prompt += "🚫 MEETING CANCELLATION CONFIRMED\n"
+                prompt += "="*60 + "\n"
+                prompt += f"EVENT CANCELLED: {event_title}\n"
+                prompt += f"Original Time: {event_time}\n"
+                prompt += "✓ Event deleted from calendar\n"
+                prompt += "✓ Cancellation sent to all attendees\n\n"
+                prompt += "YOUR RESPONSE MUST:\n"
+                prompt += "1. Acknowledge the cancellation graciously (NO judgment or pressure)\n"
+                prompt += "2. Confirm the specific meeting has been cancelled\n"
+                prompt += "3. Express understanding (\"No problem at all!\" or similar)\n"
+                prompt += "4. Offer to reschedule: \"Would you like to reschedule for another time?\"\n"
+                prompt += "5. Keep tone warm, supportive, and accommodating\n"
+                prompt += "6. DO NOT ask why they cancelled\n"
+                prompt += "7. Keep brief: 80-120 words\n\n"
+                prompt += "✅ GOOD EXAMPLE:\n"
+                prompt += f"\"No problem at all! I've cancelled our {event_title}.\n\n"
+                prompt += "If you'd like to reschedule, just let me know what time works better for you, and I'll send a new calendar invite.\n\n"
+                prompt += "Looking forward to connecting when it's convenient!\"\n\n"
+                prompt += "❌ AVOID:\n"
+                prompt += "- \"That's unfortunate...\"\n"
+                prompt += "- \"May I ask why?\"\n"
+                prompt += "- Being too formal or cold\n"
+                prompt += "="*60 + "\n\n"
+            
+            # RESCHEDULING
+            elif action_type == 'rescheduled':
+                old_event = calendar_action.get('old_event', {})
+                new_event = calendar_action.get('new_event', {})
+                old_time = calendar_action.get('old_time', 'previous time')
+                new_time = calendar_action.get('new_time', 'new time')
+                
+                prompt += "🔄 MEETING RESCHEDULED SUCCESSFULLY\n"
+                prompt += "="*60 + "\n"
+                prompt += f"OLD TIME: {old_time}\n"
+                prompt += f"NEW TIME: {new_time}\n"
+                prompt += "✓ Old event deleted from calendar\n"
+                prompt += "✓ New event created with new time\n"
+                prompt += "✓ New Meet link generated\n"
+                prompt += "✓ Updates sent to all attendees\n\n"
+                prompt += "YOUR RESPONSE MUST:\n"
+                prompt += "1. Confirm the reschedule enthusiastically (\"Perfect!\" or \"Great!\")\n"
+                prompt += "2. Clearly state: OLD time → NEW time\n"
+                prompt += "3. Mention calendar invite has been updated\n"
+                prompt += "4. Note that a new Meet link has been sent\n"
+                prompt += "5. Express enthusiasm about the upcoming meeting\n"
+                prompt += "6. Keep positive and energetic tone\n"
+                prompt += "7. Keep concise: 100-140 words\n\n"
+                prompt += "✅ GOOD EXAMPLE:\n"
+                prompt += f"\"Perfect! I've rescheduled our meeting from {old_time} to {new_time}.\n\n"
+                prompt += "The calendar invite has been updated, and I've sent you a new Google Meet link for the revised time.\n\n"
+                prompt += "Looking forward to our discussion!\"\n\n"
+                prompt += "❌ AVOID:\n"
+                prompt += "- Mentioning the old event deletion (handle seamlessly)\n"
+                prompt += "- Being apologetic about the change\n"
+                prompt += "- Too much technical detail\n"
+                prompt += "="*60 + "\n\n"
+            
+            # EDGE CASE: No event found to cancel
+            elif action_type == 'cancel_no_event':
+                prompt += "⚠️ CANCELLATION REQUEST - NO EVENT FOUND\n"
+                prompt += "="*60 + "\n"
+                prompt += "User wants to cancel a meeting, but we couldn't find it.\n\n"
+                prompt += "YOUR RESPONSE MUST:\n"
+                prompt += "1. Acknowledge their cancellation request politely\n"
+                prompt += "2. Explain you couldn't find the specific meeting\n"
+                prompt += "3. Ask which meeting they meant (date/time)\n"
+                prompt += "4. Offer to check manually\n"
+                prompt += "5. Keep helpful and apologetic tone\n"
+                prompt += "6. Keep brief: 60-90 words\n\n"
+                prompt += "EXAMPLE:\n"
+                prompt += "\"I'd be happy to cancel the meeting for you! However, I couldn't locate the specific meeting in the calendar. Could you please confirm which meeting you'd like to cancel (date and time)? I'll take care of it right away!\"\n"
+                prompt += "="*60 + "\n\n"
+            
+            # EDGE CASE: Reschedule requested but new time unclear
+            elif action_type == 'reschedule_time_unclear':
+                event = calendar_action.get('event', {})
+                event_title = event.get('title', 'meeting')
+                event_time = event.get('start_time', 'your meeting')
+                
+                prompt += "🔄 RESCHEDULE REQUEST - NEW TIME NEEDED\n"
+                prompt += "="*60 + "\n"
+                prompt += f"Current Meeting: {event_title} at {event_time}\n"
+                prompt += "User wants to reschedule but didn't specify new time.\n\n"
+                prompt += "YOUR RESPONSE MUST:\n"
+                prompt += "1. Acknowledge reschedule request positively\n"
+                prompt += "2. Confirm which meeting they're referring to\n"
+                prompt += "3. Ask for specific new date and time\n"
+                prompt += "4. Optionally suggest 2 alternative times\n"
+                prompt += "5. Keep accommodating and helpful tone\n"
+                prompt += "6. Keep brief: 80-110 words\n\n"
+                prompt += "EXAMPLE:\n"
+                prompt += f"\"I'd be happy to reschedule our {event_title}!\n\n"
+                prompt += "What date and time would work better for you?\n\n"
+                prompt += "If it helps, I can suggest a few options:\n"
+                prompt += "• [Option 1]\n"
+                prompt += "• [Option 2]\n\n"
+                prompt += "Just let me know your preference!\"\n"
+                prompt += "="*60 + "\n\n"
+            
+            # EDGE CASE: No event found to reschedule
+            elif action_type == 'reschedule_no_event':
+                prompt += "⚠️ RESCHEDULE REQUEST - NO EVENT FOUND\n"
+                prompt += "="*60 + "\n"
+                prompt += "User wants to reschedule a meeting, but we couldn't find it.\n\n"
+                prompt += "YOUR RESPONSE MUST:\n"
+                prompt += "1. Acknowledge their reschedule request\n"
+                prompt += "2. Explain you couldn't find the specific meeting\n"
+                prompt += "3. Ask which meeting they meant\n"
+                prompt += "4. Once clarified, offer to reschedule\n"
+                prompt += "5. Keep helpful tone\n"
+                prompt += "EXAMPLE:\n"
+                prompt += "\"I'd be happy to reschedule the meeting! Could you please let me know which meeting you're referring to (date and time)? Once I locate it, I'll update it with your preferred new time right away!\"\n"
+                prompt += "="*60 + "\n\n"
         
         # Add nurturing questions if this is a lead qualification email
         if nurturing_questions and len(nurturing_questions) > 0:
