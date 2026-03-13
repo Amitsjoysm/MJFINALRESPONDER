@@ -192,7 +192,7 @@ Analyze this email and determine which intent best matches what the sender is as
                 # Find the matching intent
                 if intent_name in intent_map:
                     matched_intent = intent_map[intent_name]
-                    logger.info(f"✓ AI classified intent: '{intent_name}' (confidence: {confidence:.2f})")
+                    logger.info(f"âœ“ AI classified intent: '{intent_name}' (confidence: {confidence:.2f})")
                     logger.info(f"  Reasoning: {reasoning}")
                     return matched_intent['id'], confidence, matched_intent
                 
@@ -239,7 +239,7 @@ Analyze this email and determine which intent best matches what the sender is as
                 if intent_scores:
                     intent_scores.sort(key=lambda x: (x['match_count'], x['priority']), reverse=True)
                     best_match = intent_scores[0]
-                    logger.info(f"✓ Keyword fallback: '{best_match['name']}' matched with {best_match['match_count']} keywords")
+                    logger.info(f"âœ“ Keyword fallback: '{best_match['name']}' matched with {best_match['match_count']} keywords")
                     return best_match['intent_doc']['id'], 0.8, best_match['intent_doc']
             
             # Final fallback to default intent
@@ -340,7 +340,7 @@ Analyze this email and determine which intent best matches what the sender is as
                 r'\b(appreciate it|appreciated|much appreciated)\b',
                 r'\b(will do|sounds good|perfect)\b',
                 r'\b(no problem|no worries)\b',
-                r'^\s*👍\s*$',  # Just a thumbs up emoji
+                r'^\s*ðŸ‘\s*$',  # Just a thumbs up emoji
             ]
             
             import re
@@ -407,7 +407,7 @@ Analyze this email and determine which intent best matches what the sender is as
             details = data.get('details')
             
             if is_meeting:
-                logger.info(f"✓ Meeting detected with confidence {confidence}: {details.get('title', 'Untitled')}")
+                logger.info(f"âœ“ Meeting detected with confidence {confidence}: {details.get('title', 'Untitled')}")
             
             return is_meeting, confidence, details
             
@@ -460,7 +460,7 @@ IMPORTANT - TIME CONFIRMATION PROTOCOL:
 - IST (Indian Standard Time) = UTC + 5:30
 - PST (Pacific) = UTC - 8:00
 - EST (Eastern) = UTC - 5:00
-- If "3 PM IST" → Convert to UTC: 3 PM IST = 9:30 AM UTC (NOT 4 PM UTC!)
+- If "3 PM IST" â†’ Convert to UTC: 3 PM IST = 9:30 AM UTC (NOT 4 PM UTC!)
 - If no timezone mentioned, assume UTC
 - ALWAYS specify the original timezone in the response for clarity
 
@@ -589,11 +589,11 @@ If no clear meeting detected, set is_meeting to false and confidence to 0.0."""
             draft_normalized_lower = draft_normalized.lower()
             
             if draft_length < 30:
-                logger.error(f"✗ CRITICAL: Draft extremely short ({draft_length} chars) - likely just greeting")
+                logger.error(f"âœ— CRITICAL: Draft extremely short ({draft_length} chars) - likely just greeting")
                 raise ValueError(f"Draft generation failed: Response too short ({draft_length} characters, minimum 30)")
             
             if word_count < 10:
-                logger.error(f"✗ CRITICAL: Draft has very few words ({word_count} words) - incomplete response")
+                logger.error(f"âœ— CRITICAL: Draft has very few words ({word_count} words) - incomplete response")
                 raise ValueError(f"Draft generation failed: Too few words ({word_count} words, minimum 10)")
             
             # ENHANCED: Check for greeting-only patterns (more comprehensive)
@@ -605,7 +605,7 @@ If no clear meeting detected, set is_meeting to false and confidence to 0.0."""
             
             for pattern in greeting_only_patterns:
                 if re.match(pattern, draft_normalized_lower):
-                    logger.error(f"✗ CRITICAL: Draft is greeting-only: '{draft}'")
+                    logger.error(f"âœ— CRITICAL: Draft is greeting-only: '{draft}'")
                     raise ValueError("Draft generation failed: Response is only a greeting with no content")
             
             # ENHANCED: Check if draft starts with greeting but has minimal content after
@@ -618,10 +618,10 @@ If no clear meeting detected, set is_meeting to false and confidence to 0.0."""
                     # Check content after greeting
                     remaining_content = ' '.join(lines[1:]).strip()
                     if len(remaining_content) < 40 or len(remaining_content.split()) < 12:
-                        logger.error(f"✗ CRITICAL: Draft has greeting but insufficient content: '{draft}'")
+                        logger.error(f"âœ— CRITICAL: Draft has greeting but insufficient content: '{draft}'")
                         raise ValueError(f"Draft generation failed: Greeting present but insufficient content ({len(remaining_content)} chars, {len(remaining_content.split())} words after greeting)")
             
-            logger.info(f"✓ Draft generated ({draft_length} chars, {word_count} words, signature removed)")
+            logger.info(f"âœ“ Draft generated ({draft_length} chars, {word_count} words, signature removed)")
             
             return draft, self.tokens_used
             
@@ -647,7 +647,7 @@ If no clear meeting detected, set is_meeting to false and confidence to 0.0."""
         
         # Add nurturing questions if this is a lead qualification email
         if nurturing_questions and len(nurturing_questions) > 0:
-            prompt += "🎯 LEAD QUALIFICATION - IMPORTANT\n"
+            prompt += "ðŸŽ¯ LEAD QUALIFICATION - IMPORTANT\n"
             prompt += "="*50 + "\n"
             prompt += "This is a potential lead. You MUST naturally integrate these qualification questions into your response:\n\n"
             
@@ -657,7 +657,7 @@ If no clear meeting detected, set is_meeting to false and confidence to 0.0."""
                 required_mark = " (REQUIRED)" if is_required else ""
                 prompt += f"{i}. {question_text}{required_mark}\n"
             
-            prompt += "\n✨ CRITICAL INSTRUCTIONS FOR QUESTION INTEGRATION:\n"
+            prompt += "\nâœ¨ CRITICAL INSTRUCTIONS FOR QUESTION INTEGRATION:\n"
             prompt += "- Weave these questions NATURALLY into your response\n"
             prompt += "- DO NOT make it feel like an interrogation or form\n"
             prompt += "- Introduce questions conversationally (e.g., 'To better assist you, I'd love to know...')\n"
@@ -670,7 +670,7 @@ If no clear meeting detected, set is_meeting to false and confidence to 0.0."""
         if follow_up_context and follow_up_context.get('is_automated_followup'):
             follow_up_type = follow_up_context.get('follow_up_type', 'time-based')
             
-            prompt += "🔔 THIS IS AN AUTOMATED FOLLOW-UP EMAIL\n"
+            prompt += "ðŸ”” THIS IS AN AUTOMATED FOLLOW-UP EMAIL\n"
             prompt += "="*50 + "\n"
             
             if follow_up_type == 'standard':
@@ -688,12 +688,12 @@ If no clear meeting detected, set is_meeting to false and confidence to 0.0."""
                 prompt += "6. Don't be pushy - be helpful and available\n"
                 prompt += "7. Use conversation history below to make it contextual and specific\n\n"
                 
-                prompt += "✅ GOOD FOLLOW-UP EXAMPLE:\n"
+                prompt += "âœ… GOOD FOLLOW-UP EXAMPLE:\n"
                 prompt += "\"I wanted to circle back on [specific topic from conversation]. "
                 prompt += "I know things get busy, so no rush. I thought you might find [additional value] helpful. "
                 prompt += "Let me know if you have any questions about [specific point]!\"\n\n"
                 
-                prompt += "❌ AVOID GENERIC TEMPLATES:\n"
+                prompt += "âŒ AVOID GENERIC TEMPLATES:\n"
                 prompt += "- \"Just following up...\"\n"
                 prompt += "- \"Did you get my previous email?\"\n"
                 prompt += "- \"Checking in...\"\n"
@@ -711,6 +711,26 @@ If no clear meeting detected, set is_meeting to false and confidence to 0.0."""
                 prompt += "3. Provide any updates or new information since last contact\n"
                 prompt += "4. Ask how you can help or move forward\n"
                 prompt += "5. Be respectful of their time - get to the point\n"
+            
+            # Add enriched context if available
+            if follow_up_context.get('sender_history'):
+                prompt += "\nðŸ“‹ FULL SENDER HISTORY (use for context):\n"
+                prompt += follow_up_context['sender_history'] + "\n"
+            
+            if follow_up_context.get('followup_history'):
+                prompt += "\nðŸ“¨ PREVIOUS FOLLOW-UPS SENT (DO NOT repeat the same message):\n"
+                prompt += follow_up_context['followup_history'] + "\n"
+                prompt += "\nIMPORTANT: Make this follow-up DIFFERENT from previous ones. Add new value or a new angle.\n"
+            
+            if follow_up_context.get('original_email_body'):
+                prompt += f"\nðŸ“§ ORIGINAL EMAIL FROM SENDER:\n{follow_up_context['original_email_body'][:500]}\n"
+            
+            if follow_up_context.get('original_draft_sent'):
+                prompt += f"\nðŸ“¤ OUR PREVIOUS RESPONSE:\n{follow_up_context['original_draft_sent'][:500]}\n"
+            
+            if follow_up_context.get('kb_summary'):
+                prompt += "\nðŸ“š KNOWLEDGE BASE (use relevant info to add value in follow-up):\n"
+                prompt += follow_up_context['kb_summary'][:1000] + "\n"
             
             prompt += "="*50 + "\n\n"
         
@@ -744,7 +764,7 @@ If no clear meeting detected, set is_meeting to false and confidence to 0.0."""
         
         # Add validation feedback
         if validation_issues:
-            prompt += "\n⚠️ PREVIOUS DRAFT HAD ISSUES - MUST FIX:\n"
+            prompt += "\nâš ï¸ PREVIOUS DRAFT HAD ISSUES - MUST FIX:\n"
             for issue in validation_issues:
                 prompt += f"- {issue}\n"
             prompt += "\n"
@@ -760,9 +780,9 @@ If no clear meeting detected, set is_meeting to false and confidence to 0.0."""
             if confidence >= 0.5:
                 # Meeting detected but needs confirmation
                 prompt += f"""
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📅 MEETING REQUEST DETECTED - TIME CONFIRMATION NEEDED
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”
+ðŸ“… MEETING REQUEST DETECTED - TIME CONFIRMATION NEEDED
+â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”
 Confidence: {confidence:.1f} (Medium - needs explicit confirmation)
 Suggested Time: {details.get('start_time', 'Not specified')}
 Title: {details.get('title', 'Meeting')}
@@ -776,7 +796,7 @@ Your response should:
 5. Mention you'll check for any scheduling conflicts
 
 Once user explicitly confirms the time, the system will automatically create the calendar event.
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”
 
 """
         
@@ -813,8 +833,8 @@ Body:
             
             if is_meeting_confirmation and calendar_event:
                 prompt += """
-🎯 SPECIAL CASE: MEETING TIME CONFIRMATION
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ðŸŽ¯ SPECIAL CASE: MEETING TIME CONFIRMATION
+â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”
 The user has confirmed the meeting time. Calendar event has been created.
 
 YOUR RESPONSE MUST:
@@ -877,9 +897,9 @@ Focus on helpful, {'conversational' if nurturing_questions else 'concise'}, cont
             event = calendar_event
         
         calendar_str = f"""
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📅 CALENDAR EVENT CREATED - MUST MENTION IN RESPONSE
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”
+ðŸ“… CALENDAR EVENT CREATED - MUST MENTION IN RESPONSE
+â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”
 Title: {event.get('title')}
 Date & Time: {event.get('start_time')} to {event.get('end_time')} ({event.get('timezone', 'UTC')})
 Location: {event.get('location') or 'Virtual Meeting'}
@@ -892,7 +912,7 @@ Location: {event.get('location') or 'Virtual Meeting'}
         if event.get('attendees'):
             calendar_str += f"Attendees: {', '.join(event.get('attendees', []))}\n"
         
-        calendar_str += """━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        calendar_str += """â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”
 
 IMPORTANT: You MUST include in your response:
 1. Confirm the meeting has been scheduled
@@ -915,7 +935,7 @@ IMPORTANT: You MUST include in your response:
         
         base_message = f"""You are an AI email assistant that generates professional, helpful email responses.
 
-🚨 CRITICAL REQUIREMENTS - MUST FOLLOW:
+ðŸš¨ CRITICAL REQUIREMENTS - MUST FOLLOW:
 1. NEVER respond with ONLY a greeting (e.g., "Hi John," or "Hello," alone)
 2. ALWAYS provide substantive content - minimum 50 characters, 20 words
 3. ALWAYS address the specific questions or concerns in the email
@@ -939,14 +959,14 @@ FORMATTING:
 - End with the main content only - signature will be added automatically
 - Use the persona's tone and style
 
-❌ INVALID EXAMPLES (DO NOT GENERATE):
+âŒ INVALID EXAMPLES (DO NOT GENERATE):
 - "Hi John,"
 - "Hello Sarah,"
 - "Dear Customer,"
 - "Thanks for reaching out."
 - Any response under 50 characters
 
-✅ VALID EXAMPLES (MUST GENERATE):
+âœ… VALID EXAMPLES (MUST GENERATE):
 - Complete responses that address the inquiry with specific information
 - Responses that answer questions with details
 - Responses that provide value and next steps"""
@@ -976,13 +996,13 @@ FORMATTING:
             user = await self.db.users.find_one({"id": user_id})
             if user and user.get('persona'):
                 context['persona'] = user['persona']
-                logger.info(f"✓ Loaded user persona ({len(user['persona'])} chars)")
+                logger.info(f"âœ“ Loaded user persona ({len(user['persona'])} chars)")
             else:
                 # Fallback to email account persona
                 account = await self.db.email_accounts.find_one({"id": email_account_id})
                 if account and account.get('persona'):
                     context['persona'] = account['persona']
-                    logger.info(f"✓ Loaded email account persona ({len(account['persona'])} chars)")
+                    logger.info(f"âœ“ Loaded email account persona ({len(account['persona'])} chars)")
         except Exception as e:
             logger.warning(f"Could not load persona: {e}")
         
@@ -993,7 +1013,7 @@ FORMATTING:
                 "is_active": True
             }).to_list(100)  # Increased from 50 to 100
             context['knowledge_base'] = kb_entries
-            logger.info(f"✓ Loaded {len(kb_entries)} knowledge base entries")
+            logger.info(f"âœ“ Loaded {len(kb_entries)} knowledge base entries")
         except Exception as e:
             logger.warning(f"Could not load knowledge base: {e}")
         
@@ -1005,8 +1025,8 @@ FORMATTING:
                     if intent.get('prompt'):
                         context['intent_prompt'] = intent['prompt']
                     context['intent_name'] = intent.get('name', 'Unknown')
-                    logger.info(f"✓ Loaded intent: {context['intent_name']}")
-                    logger.info(f"✓ Intent prompt: {len(context['intent_prompt'])} chars" if context['intent_prompt'] else "⚠ No intent prompt")
+                    logger.info(f"âœ“ Loaded intent: {context['intent_name']}")
+                    logger.info(f"âœ“ Intent prompt: {len(context['intent_prompt'])} chars" if context['intent_prompt'] else "âš  No intent prompt")
             except Exception as e:
                 logger.warning(f"Could not load intent: {e}")
         
@@ -1050,7 +1070,7 @@ FORMATTING:
             
             # Absolute minimum: 50 characters
             if draft_length < 50:
-                logger.warning(f"✗ VALIDATION FAILED: Draft too short ({draft_length} chars, minimum 50)")
+                logger.warning(f"âœ— VALIDATION FAILED: Draft too short ({draft_length} chars, minimum 50)")
                 return False, [f"Draft is too short: {draft_length} characters (minimum 50 required)"], 0
             
             # ============================================================
@@ -1075,7 +1095,7 @@ FORMATTING:
             
             for pattern in greeting_exact_patterns:
                 if re.match(pattern, draft_no_whitespace_lower):
-                    logger.warning(f"✗ VALIDATION FAILED: Greeting-only response detected (exact match)")
+                    logger.warning(f"âœ— VALIDATION FAILED: Greeting-only response detected (exact match)")
                     return False, ["Draft contains only a greeting with no actual content"], 0
             
             # Pattern 2: Greeting at start + minimal content (STRICTER)
@@ -1096,13 +1116,13 @@ FORMATTING:
                     
                     # STRICT: If remaining content is less than 50 characters, reject
                     if len(remaining_content) < 50:
-                        logger.warning(f"✗ VALIDATION FAILED: Greeting with insufficient content ({len(remaining_content)} chars after greeting)")
+                        logger.warning(f"âœ— VALIDATION FAILED: Greeting with insufficient content ({len(remaining_content)} chars after greeting)")
                         return False, [f"Draft has greeting but insufficient actual content ({len(remaining_content)} characters after greeting, minimum 50 required)"], 0
                     
                     # EXTRA CHECK: Ensure remaining content has substance (not just filler)
                     remaining_word_count = len(remaining_content.split())
                     if remaining_word_count < 15:
-                        logger.warning(f"✗ VALIDATION FAILED: Greeting with too few words after greeting ({remaining_word_count} words)")
+                        logger.warning(f"âœ— VALIDATION FAILED: Greeting with too few words after greeting ({remaining_word_count} words)")
                         return False, [f"Draft has greeting but too few words after greeting ({remaining_word_count} words, minimum 15 required)"], 0
             
             # ============================================================
@@ -1112,7 +1132,7 @@ FORMATTING:
             
             # Minimum 20 words for any response
             if word_count < 20:
-                logger.warning(f"✗ VALIDATION FAILED: Too few words ({word_count}, minimum 20)")
+                logger.warning(f"âœ— VALIDATION FAILED: Too few words ({word_count}, minimum 20)")
                 return False, [f"Draft has only {word_count} words (minimum 20 required)"], 0
             
             # ============================================================
@@ -1122,7 +1142,7 @@ FORMATTING:
             sentence_endings = draft_stripped.count('.') + draft_stripped.count('!') + draft_stripped.count('?')
             
             if sentence_endings < 2:
-                logger.warning(f"✗ VALIDATION FAILED: Too few sentences ({sentence_endings})")
+                logger.warning(f"âœ— VALIDATION FAILED: Too few sentences ({sentence_endings})")
                 return False, [f"Draft needs at least 2 complete sentences (found {sentence_endings})"], 0
             
             # ============================================================
@@ -1134,24 +1154,24 @@ FORMATTING:
             system_message = """You are a STRICT email validation AI. Your job is to prevent low-quality or incomplete drafts from being sent.
 
 VALIDATION CRITERIA (ALL must pass):
-1. ✅ Professional tone and language
-2. ✅ Directly addresses the sender's questions/concerns
-3. ✅ Provides helpful, actionable information
-4. ✅ No grammatical errors or typos
-5. ✅ Appropriate length (minimum 50 characters, 20+ words)
-6. ✅ Does not repeat information already in thread
-7. ✅ Does not make promises that can't be kept
-8. ✅ Shows understanding of the specific situation
-9. ✅ Has actual content (NOT just a greeting)
-10. ✅ Answers questions if any were asked
+1. âœ… Professional tone and language
+2. âœ… Directly addresses the sender's questions/concerns
+3. âœ… Provides helpful, actionable information
+4. âœ… No grammatical errors or typos
+5. âœ… Appropriate length (minimum 50 characters, 20+ words)
+6. âœ… Does not repeat information already in thread
+7. âœ… Does not make promises that can't be kept
+8. âœ… Shows understanding of the specific situation
+9. âœ… Has actual content (NOT just a greeting)
+10. âœ… Answers questions if any were asked
 
 CRITICAL REJECTION RULES:
-❌ REJECT if draft is just "Hi {Name}," or similar greeting
-❌ REJECT if draft is under 50 characters
-❌ REJECT if draft doesn't address the email content
-❌ REJECT if draft is generic template text
-❌ REJECT if draft doesn't answer questions asked
-❌ REJECT if draft is incomplete or cut off
+âŒ REJECT if draft is just "Hi {Name}," or similar greeting
+âŒ REJECT if draft is under 50 characters
+âŒ REJECT if draft doesn't address the email content
+âŒ REJECT if draft is generic template text
+âŒ REJECT if draft doesn't answer questions asked
+âŒ REJECT if draft is incomplete or cut off
 
 BE STRICT. When in doubt, REJECT the draft.
 
@@ -1189,9 +1209,9 @@ Score < 70 = REJECT (is_valid: false)"""
             all_issues = issues + ai_issues
             
             if is_valid and not all_issues:
-                logger.info(f"✓ Draft validation PASSED (score: {score}/100, {draft_length} chars, {word_count} words)")
+                logger.info(f"âœ“ Draft validation PASSED (score: {score}/100, {draft_length} chars, {word_count} words)")
             else:
-                logger.warning(f"✗ Draft validation FAILED (score: {score}/100): {', '.join(all_issues)}")
+                logger.warning(f"âœ— Draft validation FAILED (score: {score}/100): {', '.join(all_issues)}")
             
             return is_valid, all_issues, self.tokens_used
             
@@ -1229,21 +1249,21 @@ Body:
 {draft}
 
 VALIDATION CHECKLIST:
-1. ✅ Is the draft MORE than just a greeting? (Must answer: YES)
-2. ✅ Does it address the sender's specific questions/concerns? (Must answer: YES)
-3. ✅ Does it provide helpful, actionable information? (Must answer: YES)
-4. ✅ Is it at least 50 characters and 20 words? (Must answer: YES)
-5. ✅ Is it professional and well-written? (Must answer: YES)
-6. ✅ Does it avoid repeating what was already said? (Must answer: YES)
-7. ✅ Is it specific to this situation, not generic? (Must answer: YES)
+1. âœ… Is the draft MORE than just a greeting? (Must answer: YES)
+2. âœ… Does it address the sender's specific questions/concerns? (Must answer: YES)
+3. âœ… Does it provide helpful, actionable information? (Must answer: YES)
+4. âœ… Is it at least 50 characters and 20 words? (Must answer: YES)
+5. âœ… Is it professional and well-written? (Must answer: YES)
+6. âœ… Does it avoid repeating what was already said? (Must answer: YES)
+7. âœ… Is it specific to this situation, not generic? (Must answer: YES)
 
 EXAMPLES OF INVALID DRAFTS (MUST REJECT):
-❌ "Hi John,"
-❌ "Hello Sarah, "
-❌ "Dear Customer,"
-❌ "Hi there, thanks for reaching out."
-❌ Any draft under 50 characters
-❌ Any draft that doesn't answer the questions asked
+âŒ "Hi John,"
+âŒ "Hello Sarah, "
+âŒ "Dear Customer,"
+âŒ "Hi there, thanks for reaching out."
+âŒ Any draft under 50 characters
+âŒ Any draft that doesn't answer the questions asked
 
 If ANY checklist item fails, mark as invalid.
 
