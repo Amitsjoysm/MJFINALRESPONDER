@@ -74,7 +74,7 @@ class LeadAgentService:
             is_lead = intent.get('is_inbound_lead', False)
             
             if is_lead:
-                logger.info(f"✓ Inbound lead detected via intent: {intent.get('name')}")
+                logger.info(f"âœ“ Inbound lead detected via intent: {intent.get('name')}")
             
             return is_lead
             
@@ -351,7 +351,7 @@ Return ONLY the JSON object, no explanations."""
             # Save to database
             await self.db.inbound_leads.insert_one(lead.model_dump())
             
-            logger.info(f"✓ Lead created: {lead.id} ({lead.lead_email}) - Stage: {lead.stage}, Score: {lead.score}")
+            logger.info(f"âœ“ Lead created: {lead.id} ({lead.lead_email}) - Stage: {lead.stage}, Score: {lead.score}")
             
             return lead
             
@@ -412,7 +412,7 @@ Return ONLY the JSON object, no explanations."""
             if new_stage and new_stage != lead.stage:
                 old_stage = lead.stage
                 lead.stage = new_stage
-                logger.info(f"Auto stage transition: {old_stage} → {new_stage} (score: {lead.score})")
+                logger.info(f"Auto stage transition: {old_stage} â†’ {new_stage} (score: {lead.score})")
                 
                 # Add transition activity
                 lead.activities.append({
@@ -429,7 +429,7 @@ Return ONLY the JSON object, no explanations."""
                 {"$set": lead.model_dump()}
             )
             
-            logger.info(f"✓ Lead updated: {lead.id} - Stage: {lead.stage}, Score: {lead.score} (+{5}pts engagement), Emails: {lead.emails_received}+{lead.emails_sent}")
+            logger.info(f"âœ“ Lead updated: {lead.id} - Stage: {lead.stage}, Score: {lead.score} (+{5}pts engagement), Emails: {lead.emails_received}+{lead.emails_sent}")
             
             return lead
             
@@ -470,7 +470,7 @@ Return ONLY the JSON object, no explanations."""
                 old_stage = lead.stage
                 lead.stage = 'qualified'
                 
-                logger.info(f"Meeting scheduled! Auto-qualified: {old_stage} → qualified (score: {old_score} → {lead.score}, +{score_increase}pts)")
+                logger.info(f"Meeting scheduled! Auto-qualified: {old_stage} â†’ qualified (score: {old_score} â†’ {lead.score}, +{score_increase}pts)")
             
             # Add activity
             activity = {
@@ -496,7 +496,7 @@ Return ONLY the JSON object, no explanations."""
                 {"$set": lead.model_dump()}
             )
             
-            logger.info(f"✓ Meeting scheduled for lead: {lead.id} - Score increased: {old_score} → {lead.score} (+{score_increase}pts, meeting bonus: +30)")
+            logger.info(f"âœ“ Meeting scheduled for lead: {lead.id} - Score increased: {old_score} â†’ {lead.score} (+{score_increase}pts, meeting bonus: +30)")
             
             return lead
             
@@ -515,10 +515,10 @@ Return ONLY the JSON object, no explanations."""
         Transition lead to new stage with validation
         
         State Machine Rules:
-        - new → contacted (when first reply sent)
-        - contacted → qualified (when engagement threshold met)
-        - qualified → converted (manual or trigger)
-        - any → lost (manual only)
+        - new â†’ contacted (when first reply sent)
+        - contacted â†’ qualified (when engagement threshold met)
+        - qualified â†’ converted (manual or trigger)
+        - any â†’ lost (manual only)
         
         This is deterministic and follows strict rules
         """
@@ -532,7 +532,7 @@ Return ONLY the JSON object, no explanations."""
             
             # Validate transition
             if not self._is_valid_stage_transition(old_stage, new_stage):
-                logger.warning(f"Invalid stage transition: {old_stage} → {new_stage}")
+                logger.warning(f"Invalid stage transition: {old_stage} â†’ {new_stage}")
                 # Allow it but log the warning
             
             # Update stage
@@ -553,7 +553,7 @@ Return ONLY the JSON object, no explanations."""
             activity = {
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "activity_type": "stage_changed",
-                "description": f"Stage changed: {old_stage} → {new_stage}",
+                "description": f"Stage changed: {old_stage} â†’ {new_stage}",
                 "details": stage_change,
                 "performed_by": performed_by
             }
@@ -574,7 +574,7 @@ Return ONLY the JSON object, no explanations."""
                 {"$set": lead.model_dump()}
             )
             
-            logger.info(f"✓ Lead stage transition: {lead.id} - {old_stage} → {new_stage}")
+            logger.info(f"âœ“ Lead stage transition: {lead.id} - {old_stage} â†’ {new_stage}")
             
             return lead
             
@@ -601,8 +601,8 @@ Return ONLY the JSON object, no explanations."""
         Check if lead should auto-transition to next stage
         
         Rules:
-        - new → contacted: When first reply is sent (emails_sent > 0)
-        - contacted → qualified: When engagement is high (score >= 60, emails_received >= 2)
+        - new â†’ contacted: When first reply is sent (emails_sent > 0)
+        - contacted â†’ qualified: When engagement is high (score >= 60, emails_received >= 2)
         
         Returns:
             New stage if transition should happen, None otherwise
@@ -656,7 +656,7 @@ Return ONLY the JSON object, no explanations."""
         
         # Questions answered (0-20 points)
         # Each answered question = 10 points (up to 2 questions = 20 points)
-        answers_count = len(lead.answers_collected) if lead.answers_collected else 0
+        answers_count = len(lead.nurturing_questions_asked) if lead.nurturing_questions_asked else 0
         answer_score = min(answers_count * 10, 20)
         score += answer_score
         
