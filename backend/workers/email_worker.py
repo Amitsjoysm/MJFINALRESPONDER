@@ -218,7 +218,7 @@ async def process_email(email_id: str):
         
         is_lead = await lead_service.is_inbound_lead(intent_id, email.user_id)
         if is_lead:
-            logger.info(f"✓ Inbound lead detected for email {email.id}")
+            logger.info(f"âœ“ Inbound lead detected for email {email.id}")
             await add_action(email_id, "inbound_lead_detected", {
                 "intent_name": intent_name,
                 "lead_email": email.from_email
@@ -264,7 +264,7 @@ async def process_email(email_id: str):
                     # If existing_lead_id exists, it's already in awaiting_info status
                     # Just update it with final status
                     if existing_lead_id:
-                        logger.info(f"✓ Lead {existing_lead_id} final status: {lead_stage}")
+                        logger.info(f"âœ“ Lead {existing_lead_id} final status: {lead_stage}")
                         # The status is already updated by integration service
                         
                         # Get the updated lead
@@ -289,7 +289,7 @@ async def process_email(email_id: str):
                             extracted_data=extracted_data
                         )
                         
-                        logger.info(f"✓ Lead created (fallback): {lead.id} ({lead.lead_email}) - Stage: {lead.stage}")
+                        logger.info(f"âœ“ Lead created (fallback): {lead.id} ({lead.lead_email}) - Stage: {lead.stage}")
                         
                         await add_action(email_id, "lead_created", {
                             "lead_id": lead.id,
@@ -540,7 +540,7 @@ async def process_email(email_id: str):
                                     meeting_details.get('start_time'),
                                     event_result['event_id']
                                 )
-                                logger.info(f"✓ Meeting recorded for lead {lead_doc['id']}")
+                                logger.info(f"âœ“ Meeting recorded for lead {lead_doc['id']}")
                         except Exception as e:
                             logger.error(f"Error updating lead meeting: {e}")
                     
@@ -739,7 +739,7 @@ async def process_email(email_id: str):
                                             "Auto-transition based on email sent",
                                             "system"
                                         )
-                                        logger.info(f"✓ Lead {lead.id} auto-transitioned: {lead.stage} → {new_stage}")
+                                        logger.info(f"âœ“ Lead {lead.id} auto-transitioned: {lead.stage} â†’ {new_stage}")
                             except Exception as e:
                                 logger.error(f"Error updating lead after email sent: {e}")
                         
@@ -794,7 +794,7 @@ async def process_email(email_id: str):
                                 "total_count": len(follow_ups_created),
                                 "type": "AI-powered context-aware"
                             })
-                            logger.info(f"✓ Scheduled {len(follow_ups_created)} AI-powered context-aware follow-ups for email {email.id}")
+                            logger.info(f"âœ“ Scheduled {len(follow_ups_created)} AI-powered context-aware follow-ups for email {email.id}")
                         elif automated_followups_created:
                             logger.info(f"Skipping standard follow-ups for email {email.id} - automated time-based follow-ups already created")
                         elif is_simple_ack:
@@ -857,13 +857,13 @@ async def send_calendar_notification(email: Email, event, email_service, has_con
         if has_conflict and conflict_details:
             conflict_warning = f"""
 
-⚠️  SCHEDULING CONFLICT DETECTED  ⚠️
+âš ï¸  SCHEDULING CONFLICT DETECTED  âš ï¸
 
 The following existing event(s) conflict with this meeting:
 """
             for conflict in conflict_details:
                 conflict_warning += f"""
-• {conflict['title']}
+â€¢ {conflict['title']}
   Time: {conflict['start_time']} to {conflict['end_time']}
 """
             conflict_warning += """
@@ -874,14 +874,14 @@ Please review and reschedule if needed.
         event_body = f"""A calendar event has been created based on your email:
 
 Event Details:
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”
 Title: {event.title}
 Start: {event.start_time}
 End: {event.end_time}
 Location: {event.location or 'Not specified'}
 Description: {event.description or 'No description'}
 Attendees: {', '.join(event.attendees) if event.attendees else 'None'}
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”
 {conflict_warning}
 
 This event has been added to your calendar. You will receive a reminder 1 hour before the meeting.
@@ -927,8 +927,83 @@ async def poll_all_accounts():
     except Exception as e:
         logger.error(f"Error polling all accounts: {e}")
 
+async def _get_enriched_follow_up_context(email: Email, follow_up, email_service, thread_context):
+    """
+    Build enriched context for follow-up draft generation.
+    Pulls full thread history, KB entries, previous drafts, and all related emails
+    from the same sender to give AI maximum context for generating a relevant follow-up.
+    """
+    # Get all emails from this sender for comprehensive context
+    sender_emails = await db.emails.find({
+        "user_id": email.user_id,
+        "from_email": email.from_email
+    }).sort("received_at", -1).to_list(10)
+    
+    # Get all previous follow-ups sent to this sender
+    previous_follow_ups = await db.follow_ups.find({
+        "user_id": email.user_id,
+        "email_id": email.id,
+        "status": "sent"
+    }).sort("sent_at", -1).to_list(10)
+    
+    # Get knowledge base entries for context
+    kb_entries = await db.knowledge_base.find({
+        "user_id": email.user_id,
+        "is_active": True
+    }).to_list(50)
+    
+    kb_summary = ""
+    if kb_entries:
+        kb_parts = []
+        for kb in kb_entries:
+            kb_parts.append(f"[{kb.get('category', 'General')}] {kb['title']}: {kb['content'][:300]}")
+        kb_summary = "\n".join(kb_parts)
+    
+    # Build sender history summary
+    sender_history = ""
+    if sender_emails:
+        history_parts = []
+        for se in sender_emails[:5]:
+            history_parts.append(
+                f"- [{se.get('received_at', 'N/A')}] Subject: {se.get('subject', 'N/A')}\n"
+                f"  Body snippet: {se.get('body', '')[:200]}\n"
+                f"  Our response: {se.get('draft_content', 'N/A')[:200] if se.get('draft_content') else 'No response sent'}"
+            )
+        sender_history = "\n".join(history_parts)
+    
+    # Build previous follow-ups summary
+    followup_history = ""
+    if previous_follow_ups:
+        fu_parts = []
+        for fu in previous_follow_ups:
+            fu_parts.append(
+                f"- [{fu.get('sent_at', 'N/A')}] Follow-up sent: {fu.get('body', '')[:200]}"
+            )
+        followup_history = "\n".join(fu_parts)
+    
+    # Determine follow-up type
+    is_standard = follow_up.matched_text and 'standard follow-up' in follow_up.matched_text
+    
+    follow_up_context = {
+        'is_automated_followup': True,
+        'base_date': follow_up.base_date,
+        'matched_text': follow_up.matched_text,
+        'original_context': follow_up.follow_up_context,
+        'follow_up_type': 'standard' if is_standard else 'time-based',
+        'conversation_history': thread_context,
+        'kb_summary': kb_summary,
+        'sender_history': sender_history,
+        'followup_history': followup_history,
+        'original_email_subject': email.subject,
+        'original_email_body': email.body,
+        'original_draft_sent': email.draft_content if hasattr(email, 'draft_content') else None,
+    }
+    
+    return follow_up_context
+
+
 async def check_follow_ups():
-    """Check and send scheduled follow-ups"""
+    """Check and send scheduled follow-ups with enriched context"""
     try:
         now = datetime.now(timezone.utc).isoformat()
         
@@ -952,38 +1027,65 @@ async def check_follow_ups():
             # Get account
             account = await email_service.get_account(follow_up.email_account_id)
             if not account:
+                logger.warning(f"Account not found for follow-up {follow_up.id}, cancelling")
+                await db.follow_ups.update_one(
+                    {"id": follow_up.id},
+                    {"$set": {"status": "cancelled", "cancellation_reason": "Email account not found"}}
+                )
                 continue
             
             # Get original email
             email_doc = await db.emails.find_one({"id": follow_up.email_id})
             if not email_doc:
+                logger.warning(f"Original email not found for follow-up {follow_up.id}, cancelling")
+                await db.follow_ups.update_one(
+                    {"id": follow_up.id},
+                    {"$set": {"status": "cancelled", "cancellation_reason": "Original email not found"}}
+                )
                 continue
             
             email = Email(**email_doc)
             
+            # Check if a reply was received since follow-up was scheduled
+            # (defensive check - in case conversation service missed it)
+            recent_reply = await db.emails.find_one({
+                "user_id": email.user_id,
+                "from_email": email.from_email,
+                "received_at": {"$gt": follow_up.created_at},
+                "thread_id": email.thread_id
+            })
+            
+            if recent_reply:
+                logger.info(f"Reply detected for follow-up {follow_up.id}, cancelling")
+                await db.follow_ups.update_one(
+                    {"id": follow_up.id},
+                    {"$set": {
+                        "status": "responded",
+                        "response_detected": True,
+                        "response_detected_at": datetime.now(timezone.utc).isoformat(),
+                        "cancellation_reason": "Reply received before follow-up sent"
+                    }}
+                )
+                continue
+            
             # Handle automated follow-ups differently
             if follow_up.is_automated:
-                logger.info(f"Processing automated follow-up {follow_up.id}")
+                logger.info(f"Processing automated follow-up {follow_up.id} (type: {'standard' if follow_up.matched_text and 'standard' in follow_up.matched_text else 'time-based'})")
                 
                 # Get thread context
                 thread_context = await email_service.get_thread_context(email)
                 
-                # Prepare enhanced follow-up context for draft generation
-                follow_up_context = {
-                    'is_automated_followup': True,
-                    'base_date': follow_up.base_date,
-                    'matched_text': follow_up.matched_text,
-                    'original_context': follow_up.follow_up_context,
-                    'follow_up_type': 'standard' if 'standard follow-up' in follow_up.matched_text else 'time-based',
-                    'conversation_history': thread_context  # Include full thread for context
-                }
+                # Build enriched context with KB, sender history, and follow-up history
+                follow_up_context = await _get_enriched_follow_up_context(
+                    email, follow_up, email_service, thread_context
+                )
                 
                 # Generate draft using AI with full conversation context
                 try:
                     draft, tokens = await ai_service.generate_draft(
                         email=email,
                         user_id=email.user_id,
-                        intent_id=email.intent_detected,
+                        intent_id=email_doc.get('intent_detected'),
                         thread_context=thread_context,
                         follow_up_context=follow_up_context
                     )
@@ -1001,7 +1103,7 @@ async def check_follow_ups():
                         draft, tokens = await ai_service.generate_draft(
                             email=email,
                             user_id=email.user_id,
-                            intent_id=email.intent_detected,
+                            intent_id=email_doc.get('intent_detected'),
                             thread_context=thread_context,
                             validation_issues=issues,
                             follow_up_context=follow_up_context
@@ -1028,13 +1130,20 @@ async def check_follow_ups():
                             {"id": follow_up.id},
                             {"$set": {
                                 "status": "cancelled",
-                                "cancellation_reason": "Draft validation failed after retries"
+                                "cancellation_reason": f"Draft validation failed after retries: {'; '.join(issues)}"
                             }}
                         )
                         continue
                         
                 except Exception as e:
-                    logger.error(f"Error generating automated follow-up draft: {e}")
+                    logger.error(f"Error generating automated follow-up draft: {e}", exc_info=True)
+                    await db.follow_ups.update_one(
+                        {"id": follow_up.id},
+                        {"$set": {
+                            "status": "cancelled",
+                            "cancellation_reason": f"Draft generation error: {str(e)}"
+                        }}
+                    )
                     continue
             else:
                 # Manual follow-up - use pre-written body
@@ -1067,9 +1176,27 @@ async def check_follow_ups():
                         "body": follow_up_email.body  # Store the actual sent body
                     }}
                 )
+                
+                # Log the action on the original email
+                await add_action(email.id, "follow_up_sent", {
+                    "follow_up_id": follow_up.id,
+                    "type": "automated" if follow_up.is_automated else "manual",
+                    "follow_up_type": follow_up.matched_text or "standard",
+                    "to": email.from_email
+                })
+                
                 logger.info(f"Sent {'automated' if follow_up.is_automated else 'manual'} follow-up {follow_up.id}")
+            else:
+                logger.error(f"Failed to send follow-up {follow_up.id}")
+                await db.follow_ups.update_one(
+                    {"id": follow_up.id},
+                    {"$set": {
+                        "status": "cancelled",
+                        "cancellation_reason": "Email send failed"
+                    }}
+                )
     except Exception as e:
-        logger.error(f"Error checking follow-ups: {e}")
+        logger.error(f"Error checking follow-ups: {e}", exc_info=True)
 
 async def check_reminders():
     """Check and send calendar reminders"""
