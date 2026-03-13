@@ -1,11 +1,11 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.exceptions import RequestValidationError
-from motor.motor_asyncio import AsyncIOMotorClient
 import logging
 import asyncio
 
 from config import config
+from db import get_mongo_client, get_db, close_db
 from container import initialize_container
 from middleware.error_handler import global_exception_handler, validation_exception_handler
 from middleware.security import RateLimitMiddleware, SecurityHeadersMiddleware
@@ -18,15 +18,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# MongoDB connection with connection pooling
-client = AsyncIOMotorClient(
-    config.MONGO_URL,
-    maxPoolSize=50,
-    minPoolSize=10,
-    maxIdleTimeMS=45000,
-    serverSelectionTimeoutMS=5000
-)
-db = client[config.DB_NAME]
+# Use shared database connection
+client = get_mongo_client()
+db = get_db()
 
 # Create FastAPI app
 app = FastAPI(
@@ -130,12 +124,19 @@ async def root():
 async def health_check():
     try:
         await db.command('ping')
-        return {"status": "healthy", "database": "connected"}
+        from services.orchestrator_service import orchestrator
+        from utils.ai_concurrency import ai_concurrency
+        return {
+            "status": "healthy",
+            "database": "connected",
+            "orchestrator": orchestrator.get_metrics(),
+            "ai_concurrency": ai_concurrency.get_stats(),
+        }
     except Exception as e:
         logger.error(f"Health check failed: {e}")
         return {"status": "unhealthy", "database": "disconnected"}
 
-# Startup event - Initialize services and start background worker
+# Startup event - Initialize services and start orchestrator
 @app.on_event("startup")
 async def startup_event():
     logger.info("=" * 60)
@@ -145,96 +146,40 @@ async def startup_event():
     try:
         # Test database connection
         await db.command('ping')
-        logger.info("✓ Database connection established")
+        logger.info("âœ“ Database connection established (shared pool)")
         
         # Initialize dependency injection container
         initialize_container(db, config.JWT_SECRET)
-        logger.info("✓ Service container initialized")
+        logger.info("âœ“ Service container initialized")
         
-        # Start background workers in separate tasks
-        from workers.email_worker import poll_all_accounts, check_follow_ups, check_reminders
-        from workers.campaign_worker import process_campaign_emails, process_campaign_follow_ups, check_campaign_replies
-        
-        async def background_worker():
-            poll_counter = 0
-            follow_up_counter = 0
-            reminder_counter = 0
-            campaign_counter = 0
-            campaign_followup_counter = 0
-            campaign_reply_counter = 0
-            
-            logger.info("✓ Background workers started")
-            logger.info("  - Email polling: Every 60 seconds")
-            logger.info("  - Follow-up checking: Every 5 minutes")
-            logger.info("  - Reminder checking: Every 1 hour")
-            logger.info("  - Campaign processor: Every 30 seconds")
-            logger.info("  - Campaign follow-ups: Every 5 minutes")
-            logger.info("  - Campaign reply checker: Every 2 minutes")
-            
-            while True:
-                try:
-                    # Poll emails every 60 seconds
-                    if poll_counter % config.EMAIL_POLL_INTERVAL == 0:
-                        asyncio.create_task(poll_all_accounts())
-                        poll_counter = 0
-                    
-                    # Check follow-ups every 5 minutes
-                    if follow_up_counter % config.FOLLOW_UP_CHECK_INTERVAL == 0:
-                        asyncio.create_task(check_follow_ups())
-                        follow_up_counter = 0
-                    
-                    # Check reminders every hour
-                    if reminder_counter % config.REMINDER_CHECK_INTERVAL == 0:
-                        asyncio.create_task(check_reminders())
-                        reminder_counter = 0
-                    
-                    # Process campaign emails every 30 seconds
-                    if campaign_counter % 30 == 0:
-                        asyncio.create_task(process_campaign_emails())
-                        campaign_counter = 0
-                    
-                    # Process campaign follow-ups every 5 minutes (300 seconds)
-                    if campaign_followup_counter % 300 == 0:
-                        asyncio.create_task(process_campaign_follow_ups())
-                        campaign_followup_counter = 0
-                    
-                    # Check campaign replies every 2 minutes (120 seconds)
-                    if campaign_reply_counter % 120 == 0:
-                        asyncio.create_task(check_campaign_replies())
-                        campaign_reply_counter = 0
-                    
-                    await asyncio.sleep(1)
-                    poll_counter += 1
-                    follow_up_counter += 1
-                    reminder_counter += 1
-                    campaign_counter += 1
-                    campaign_followup_counter += 1
-                    campaign_reply_counter += 1
-                except Exception as e:
-                    logger.error(f"Background worker error: {e}", exc_info=True)
-                    await asyncio.sleep(5)
-        
-        # Start background worker
-        asyncio.create_task(background_worker())
+        # Start the Task Orchestrator (replaces monolithic background_worker)
+        from services.orchestrator_service import orchestrator
+        await orchestrator.start()
+        logger.info("âœ“ Task Orchestrator started (per-user fair scheduling)")
         
         logger.info("=" * 60)
-        logger.info("✓ AI Email Assistant API is ready!")
+        logger.info("âœ“ AI Email Assistant API is ready!")
         logger.info("=" * 60)
     except Exception as e:
-        logger.error(f"✗ Startup failed: {e}", exc_info=True)
+        logger.error(f"âœ— Startup failed: {e}", exc_info=True)
         raise
 
 @app.on_event("shutdown")
 async def shutdown_event():
     logger.info("Shutting down AI Email Assistant API...")
     
+    # Stop orchestrator
+    from services.orchestrator_service import orchestrator
+    await orchestrator.stop()
+    logger.info("âœ“ Task Orchestrator stopped")
+    
     # Close HTTP client pool
     from utils.http_client import http_client_pool
     await http_client_pool.close()
-    logger.info("✓ HTTP client pool closed")
+    logger.info("âœ“ HTTP client pool closed")
     
-    # Close database connection
-    client.close()
-    logger.info("✓ Database connection closed")
+    # Close shared database connection
+    await close_db()
+    logger.info("âœ“ Database connection closed")
     
-    logger.info("✓ Shutdown complete")
+    logger.info("âœ“ Shutdown complete")
