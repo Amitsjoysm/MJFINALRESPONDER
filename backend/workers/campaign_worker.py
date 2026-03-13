@@ -1,12 +1,12 @@
 """Campaign worker for processing campaign emails"""
 import asyncio
 import random
-from motor.motor_asyncio import AsyncIOMotorClient
 import logging
 import os
 from datetime import datetime, timezone, timedelta
 
 from config import config
+from db import get_db
 from services.email_service import EmailService
 from services.campaign_service import CampaignService
 from services.campaign_contact_service import CampaignContactService
@@ -17,9 +17,8 @@ from models.campaign_follow_up import CampaignFollowUp
 
 logger = logging.getLogger(__name__)
 
-# Database connection
-client = AsyncIOMotorClient(config.MONGO_URL)
-db = client[config.DB_NAME]
+# Use shared database connection
+db = get_db()
 
 async def process_campaign_emails():
     """Process pending campaign emails with rate limiting and delays"""
