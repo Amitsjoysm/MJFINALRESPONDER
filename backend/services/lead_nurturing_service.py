@@ -13,7 +13,7 @@ class LeadNurturingService:
     
     def __init__(self, db):
         self.db = db
-        self.nurturing_config_collection = db['lead_nurturing_configs']  # Fixed collection name
+        self.nurturing_config_collection = db['lead_nurturing_config']  # Matches routes collection name
     
     async def should_nurture_lead(
         self,
