@@ -11,6 +11,32 @@ from workers.email_worker import process_email
 
 router = APIRouter(prefix="/test", tags=["test"])
 
+@router.post("/parse-dates")
+async def test_date_parsing(
+    text: str,
+):
+    """Test date parsing from text - no auth required for testing"""
+    from services.date_parser_service import DateParserService
+    
+    parser = DateParserService()
+    results = parser.parse_time_references(text)
+    
+    return {
+        "input_text": text,
+        "current_date": datetime.now(timezone.utc).isoformat(),
+        "references_found": len(results),
+        "references": [
+            {
+                "matched_text": matched_text,
+                "target_date": target_date.isoformat(),
+                "target_date_human": target_date.strftime("%B %d, %Y at %I:%M %p %Z"),
+                "days_from_now": (target_date.date() - datetime.now(timezone.utc).date()).days,
+                "context": context[:200]
+            }
+            for matched_text, target_date, context in results
+        ]
+    }
+
 @router.post("/send-test-email")
 async def send_test_email(
     subject: str,
