@@ -111,6 +111,23 @@ async def test_email_processing(
         "total_tokens_used": ai_service.get_tokens_used()
     }
 
+@router.get("/metrics")
+async def get_system_metrics(
+    user: User = Depends(get_current_user_from_token),
+    db: AsyncIOMotorDatabase = Depends(get_db)
+):
+    """Get detailed system metrics including orchestrator and AI concurrency stats"""
+    from services.orchestrator_service import orchestrator
+    from utils.ai_concurrency import ai_concurrency
+    from utils.redis_rate_limiter import redis_rate_limiter
+    
+    return {
+        "orchestrator": orchestrator.get_metrics(),
+        "ai_concurrency": ai_concurrency.get_stats(),
+        "redis_available": redis_rate_limiter._redis is not None,
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    }
+
 @router.post("/start-polling")
 async def start_email_polling(
     user: User = Depends(get_current_user_from_token),
