@@ -4,19 +4,20 @@ from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 import logging
 
-from utils.validators import rate_limiter, TextSanitizer
+from utils.redis_rate_limiter import redis_rate_limiter
+from utils.validators import TextSanitizer
 
 logger = logging.getLogger(__name__)
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
-    """Rate limiting middleware"""
+    """Rate limiting middleware using Redis-backed limiter"""
     
     async def dispatch(self, request: Request, call_next):
         # Get client IP
         client_ip = request.client.host
         
         # Rate limit: 100 requests per minute per IP
-        if not rate_limiter.check_rate_limit(f"ip:{client_ip}", limit=100, window=60):
+        if not redis_rate_limiter.check_rate_limit(f"ip:{client_ip}", limit=100, window=60):
             logger.warning(f"Rate limit exceeded for IP: {client_ip}")
             return JSONResponse(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
