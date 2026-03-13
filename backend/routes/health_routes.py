@@ -133,21 +133,39 @@ async def detailed_health_check(db = Depends(get_db)):
 @router.get("/workers")
 async def worker_health_check(db = Depends(get_db)):
     """
-    Check the health of background workers
+    Check the health of background workers with orchestrator and AI concurrency stats
     """
     try:
-        # Check email polling worker status
-        # Check campaign worker status
-        # Check for stuck jobs
+        from services.orchestrator_service import orchestrator
+        from utils.ai_concurrency import ai_concurrency
+        from utils.redis_rate_limiter import redis_rate_limiter
+        
+        orch_metrics = orchestrator.get_metrics()
+        ai_stats = ai_concurrency.get_stats()
         
         return {
             "status": "healthy",
             "timestamp": datetime.now(timezone.utc).isoformat(),
-            "workers": {
-                "email_worker": {"status": "unknown"},
-                "campaign_worker": {"status": "unknown"}
+            "orchestrator": {
+                "running": orch_metrics["running"],
+                "active_tasks": orch_metrics["active_tasks"],
+                "tasks_dispatched": orch_metrics["tasks_dispatched"],
+                "tasks_completed": orch_metrics["tasks_completed"],
+                "tasks_failed": orch_metrics["tasks_failed"],
+                "max_concurrent_users": orch_metrics["max_concurrent_users"],
+                "max_tasks_per_user": orch_metrics["max_tasks_per_user"],
             },
-            "note": "Worker monitoring to be implemented with Redis queue inspection"
+            "ai_concurrency": {
+                "active_calls": ai_stats["active_calls"],
+                "total_calls": ai_stats["total_calls"],
+                "total_errors": ai_stats["total_errors"],
+                "total_retries": ai_stats["total_retries"],
+                "max_concurrent": ai_stats["max_concurrent"],
+                "per_user_limit": ai_stats["per_user_limit"],
+            },
+            "redis": {
+                "available": redis_rate_limiter._redis is not None,
+            },
         }
     except Exception as e:
         logger.error(f"Worker health check failed: {e}")
