@@ -17,6 +17,7 @@ from models.intent import Intent
 from models.knowledge_base import KnowledgeBase
 from services.date_parser_service import DateParserService
 from services.signature_handler import SignatureHandler
+from utils.ai_concurrency import ai_concurrency
 
 logger = logging.getLogger(__name__)
 
@@ -1387,10 +1388,12 @@ Respond with JSON indicating validation result."""
         user_message: str,
         temperature: float = 0.7,
         max_tokens: int = 800,
-        provider: Optional[str] = None
+        provider: Optional[str] = None,
+        user_id: Optional[str] = None
     ) -> str:
         """
-        Unified LLM API call with automatic fallback
+        Unified LLM API call with automatic fallback and concurrency control.
+        Uses AI concurrency manager for rate limiting and per-user fair scheduling.
         
         Args:
             system_message: System instructions
@@ -1398,45 +1401,51 @@ Respond with JSON indicating validation result."""
             temperature: Temperature setting
             max_tokens: Maximum tokens to generate
             provider: Specific provider to use ('groq' or 'claude'), or None for auto-selection
+            user_id: User ID for per-user concurrency control
             
         Returns:
             Response text from the API
         """
-        # Determine which provider to try first
-        if provider:
-            primary = provider
-            fallback = self.fallback_provider if provider != self.fallback_provider else None
-        else:
-            primary = self.primary_provider
-            fallback = self.fallback_provider
-        
-        # Try primary provider
-        try:
-            if primary == 'groq' and self.groq_api_key:
-                logger.debug(f"Using Groq API (primary)")
-                return await self._call_groq_api(system_message, user_message, temperature, max_tokens)
-            elif primary == 'claude' and self.claude_client:
-                logger.debug(f"Using Claude API (primary)")
-                return await self._call_claude_api(system_message, user_message, temperature, max_tokens)
+        async def _do_call():
+            # Determine which provider to try first
+            if provider:
+                primary = provider
+                fallback = self.fallback_provider if provider != self.fallback_provider else None
             else:
-                raise ValueError(f"Primary provider '{primary}' not configured")
-        except Exception as e:
-            logger.warning(f"Primary provider '{primary}' failed: {e}")
+                primary = self.primary_provider
+                fallback = self.fallback_provider
             
-            # Try fallback provider if available
-            if fallback and fallback != primary:
-                try:
-                    logger.info(f"Attempting fallback to '{fallback}' provider")
-                    if fallback == 'groq' and self.groq_api_key:
-                        return await self._call_groq_api(system_message, user_message, temperature, max_tokens)
-                    elif fallback == 'claude' and self.claude_client:
-                        return await self._call_claude_api(system_message, user_message, temperature, max_tokens)
-                except Exception as fallback_error:
-                    logger.error(f"Fallback provider '{fallback}' also failed: {fallback_error}")
-                    raise Exception(f"Both primary and fallback LLM providers failed")
-            
-            # No fallback available or already failed
-            raise
+            # Try primary provider
+            try:
+                if primary == 'groq' and self.groq_api_key:
+                    logger.debug(f"Using Groq API (primary)")
+                    return await self._call_groq_api(system_message, user_message, temperature, max_tokens)
+                elif primary == 'claude' and self.claude_client:
+                    logger.debug(f"Using Claude API (primary)")
+                    return await self._call_claude_api(system_message, user_message, temperature, max_tokens)
+                else:
+                    raise ValueError(f"Primary provider '{primary}' not configured")
+            except Exception as e:
+                logger.warning(f"Primary provider '{primary}' failed: {e}")
+                
+                # Try fallback provider if available
+                if fallback and fallback != primary:
+                    try:
+                        logger.info(f"Attempting fallback to '{fallback}' provider")
+                        if fallback == 'groq' and self.groq_api_key:
+                            return await self._call_groq_api(system_message, user_message, temperature, max_tokens)
+                        elif fallback == 'claude' and self.claude_client:
+                            return await self._call_claude_api(system_message, user_message, temperature, max_tokens)
+                    except Exception as fallback_error:
+                        logger.error(f"Fallback provider '{fallback}' also failed: {fallback_error}")
+                        raise Exception(f"Both primary and fallback LLM providers failed")
+                
+                # No fallback available or already failed
+                raise
+
+        # Use concurrency manager if user_id provided, otherwise call directly
+        uid = user_id or "system"
+        return await ai_concurrency.execute(uid, _do_call)
     
     # ============================================================================
     # UTILITY METHODS
