@@ -6,6 +6,7 @@ import os
 from datetime import datetime, timezone, timedelta
 
 from config import config
+from db import get_db
 from services.email_service import EmailService
 from services.ai_agent_service import AIAgentService
 from services.calendar_service import CalendarService
@@ -26,9 +27,8 @@ def format_reply_subject(subject: str) -> str:
     
     return f"Re: {subject.strip()}"
 
-# Database connection
-client = AsyncIOMotorClient(config.MONGO_URL)
-db = client[config.DB_NAME]
+# Use shared database connection
+db = get_db()
 
 async def poll_email_account(account_id: str):
     """Poll single email account for new emails"""
